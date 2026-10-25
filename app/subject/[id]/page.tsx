@@ -37,11 +37,11 @@ export default async function SubjectPage({ params }: { params: Promise<{ id: st
     ),
   )
 
-  // 学科页只展示 AI 游戏；普通任务和子模块入口（如识字乐园，已有专属卡片）不进列表
+  // 学科页只展示 AI 游戏（旧选择题播放器 + 新多题型播放器）；普通任务和子模块入口（如识字乐园，已有专属卡片）不进列表
   const games = (await fetchOnlineTasksBySubject(id).catch((err: unknown) => {
     console.error('[SubjectPage] tasks 查询失败:', err)
     return []
-  })).filter((g) => g.game_route === '/games/ai-play')
+  })).filter((g) => g.game_route === '/games/ai-play' || g.game_route === '/games/dynamic')
 
   const meta = getSubjectMeta(subject.id)
   const Icon = meta.icon

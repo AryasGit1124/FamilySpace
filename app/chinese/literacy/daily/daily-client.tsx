@@ -278,14 +278,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step])
 
-  // 浏览器不支持 TTS 时直接解锁打卡，避免按钮永远不可点
-  useEffect(() => {
-    if (typeof window !== 'undefined' && !('speechSynthesis' in window)) {
-      setStoryListened(true)
-    }
-  }, [])
-
-  /** 听故事：TTS 播报全文，自然播完（onend）才解锁打卡按钮 */
+  /** 听故事：TTS 播报全文，自然播完（音频 onend）才解锁打卡按钮 */
   const listenStory = () => {
     if (!story) return
     stopSpeak()

@@ -36,6 +36,7 @@ export function AiGameSection({ subjectId, subjectName, games }: Props) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [age, setAge] = useState('4岁')
+  const [difficulty, setDifficulty] = useState('初级')
   const [topic, setTopic] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
@@ -81,8 +82,9 @@ export function AiGameSection({ subjectId, subjectName, games }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           subjectId,
-          courseName: subjectName,
+          subjectName,
           age: age.trim(),
+          difficulty: difficulty.trim(),
           topic: trimmedTopic,
         }),
       })
@@ -134,12 +136,10 @@ export function AiGameSection({ subjectId, subjectName, games }: Props) {
       ) : (
         <ul className="flex flex-col gap-2">
           {games.map((game) => {
-            // AI 生成游戏的播放器路由需要接任务 id；子模块路由是整模块入口，直接跳
-            const href = game.game_route
-              ? game.game_route === '/games/ai-play'
-                ? `${game.game_route}/${game.id}`
-                : game.game_route
-              : null
+            // AI 生成游戏统一进万能渲染引擎 /games/dynamic/[id]（旧 /games/ai-play 内容也能解析）；子模块路由是整模块入口，直接跳
+            const isPlayerRoute =
+              game.game_route === '/games/ai-play' || game.game_route === '/games/dynamic'
+            const href = game.game_route ? (isPlayerRoute ? `/games/dynamic/${game.id}` : game.game_route) : null
             const confirming = confirmingId === game.id
             return (
               <li
@@ -206,7 +206,7 @@ export function AiGameSection({ subjectId, subjectName, games }: Props) {
             <DialogHeader>
               <DialogTitle>AI 生成新游戏</DialogTitle>
               <DialogDescription>
-                为「{subjectName}」生成 5 道选择题，生成后可直接开始玩
+                为「{subjectName}」生成 3-5 道题，题型由 AI 按学科自动选择
               </DialogDescription>
             </DialogHeader>
 
@@ -231,6 +231,20 @@ export function AiGameSection({ subjectId, subjectName, games }: Props) {
                 placeholder="例如：4岁"
                 maxLength={10}
               />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="ai-game-difficulty">难度</Label>
+              <select
+                id="ai-game-difficulty"
+                value={difficulty}
+                onChange={(e) => setDifficulty(e.target.value)}
+                className="flex h-9 w-full rounded-lg border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+              >
+                <option value="初级">初级</option>
+                <option value="中级">中级</option>
+                <option value="高级">高级</option>
+              </select>
             </div>
 
             {error && <p className="text-sm text-destructive">{error}</p>}

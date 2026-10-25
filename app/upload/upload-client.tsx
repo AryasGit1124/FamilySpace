@@ -159,72 +159,6 @@ async function probeVideoDecodable(file: File): Promise<boolean> {
 }
 
 /**
- * 判断视频是否需要在上传前转码。
- * iPhone 高画质模式拍摄的是 HEVC（.mov 或 .mp4 容器），Windows Chrome/Edge 无法解码。
- */
-function videoNeedsTranscode(f: File): boolean {
-  const ext = f.name.split('.').pop()?.toLowerCase() ?? ''
-  return ['mov', 'hevc'].includes(ext) || f.type.toLowerCase().includes('hevc')
-}
-
-interface TranscodeHandlers {
-  onProgress?: (ratio: number) => void
-  signal?: AbortSignal
-}
-
-/**
- * 用 ffmpeg.wasm 把视频转码为 H.264 + AAC 的 MP4。
- * - 动态 import，避免增大首屏体积
- * - core/wasm 从本站 /public/ffmpeg 加载（约 32MB，浏览器会缓存），不依赖境外 CDN
- * - 转码在 Web Worker 中执行，不阻塞 UI
- */
-async function transcodeToMp4(file: File, handlers: TranscodeHandlers = {}): Promise<File> {
-  // @ffmpeg/ffmpeg 内部有 new URL(classWorkerURL, import.meta.url) 的动态写法，
-  // Turbopack 静态分析会直接报 Module not found，所以它的 ESM 文件原样放在
-  // public/ffmpeg/esm 下，这里用 Function 构造的动态 import 在运行时加载，完全绕过打包器
-  const runtimeImport = new Function('u', 'return import(u)') as (
-    u: string,
-  ) => Promise<typeof import('@ffmpeg/ffmpeg')>
-  const { FFmpeg } = await runtimeImport('/ffmpeg/esm/index.js')
-  const { fetchFile, toBlobURL } = await import('@ffmpeg/util')
-
-  const ffmpeg = new FFmpeg()
-  const onAbort = () => ffmpeg.terminate()
-  handlers.signal?.addEventListener('abort', onAbort, { once: true })
-  try {
-    if (handlers.onProgress) {
-      ffmpeg.on('progress', ({ progress }) => {
-        handlers.onProgress?.(Math.min(1, Math.max(0, progress)))
-      })
-    }
-    await ffmpeg.load({
-      coreURL: await toBlobURL('/ffmpeg/ffmpeg-core.js', 'text/javascript'),
-      wasmURL: await toBlobURL('/ffmpeg/ffmpeg-core.wasm', 'application/wasm'),
-    })
-    if (handlers.signal?.aborted) throw new DOMException('已取消', 'AbortError')
-
-    const inExt = file.name.split('.').pop() || 'mov'
-    await ffmpeg.writeFile(`input.${inExt}`, await fetchFile(file))
-    // -c:v libx264 输出 H.264；-preset fast 平衡速度与压缩率；-crf 23 保证画质
-    await ffmpeg.exec([
-      '-i', `input.${inExt}`,
-      '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-      '-c:a', 'aac',
-      'output.mp4',
-    ])
-    if (handlers.signal?.aborted) throw new DOMException('已取消', 'AbortError')
-
-    const data = await ffmpeg.readFile('output.mp4')
-    const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data
-    const base = file.name.replace(/\.[^.]+$/, '')
-    return new File([bytes as Uint8Array<ArrayBuffer>], `${base}.mp4`, { type: 'video/mp4' })
-  } finally {
-    handlers.signal?.removeEventListener('abort', onAbort)
-    ffmpeg.terminate()
-  }
-}
-
-/**
  * 图片上传前压缩：长边 ≤1920px、质量 0.82。
  * 手机照片动辄 3~8MB，压完通常不到 500KB，肉眼几乎看不出差别，上传速度提升明显。
  * 压缩失败或结果反而更大时，回退原文件。
@@ -391,8 +325,6 @@ export default function UploadPage() {
   /** 视频在当前浏览器无法解码画面（HEVC 等）时置 true，仅提示不拦截 */
   const [codecWarn, setCodecWarn] = useState(false)
   const [uploading, setUploading] = useState(false)
-  /** HEVC 转码进度（0-100），null 表示未在转码 */
-  const [transcodePercent, setTranscodePercent] = useState<number | null>(null)
   /** 看门狗触发断点续传时置 true，用于界面提示 */
   const [stalling, setStalling] = useState(false)
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -561,7 +493,7 @@ export default function UploadPage() {
     abortRef.current = controller
     try {
       // 0. 图片先压缩再上传（视频无法在浏览器端压缩，按原文件上传）
-      let prepared = await compressImage(file)
+      const prepared = await compressImage(file)
 
       // 0.5 提交前再查一次重复（强制刷新，避免别的窗口刚传过同一文件）
       try {
@@ -575,19 +507,6 @@ export default function UploadPage() {
         }
       } catch (err) {
         console.warn('[UploadPage] 重复检测失败，继续上传:', err)
-      }
-
-      // 0.8 HEVC 视频（iPhone 高画质模式）自动转码为 H.264 MP4，否则 Windows 浏览器只有声音没有画面
-      if (prepared.type.startsWith('video/') && (videoNeedsTranscode(prepared) || codecWarn)) {
-        setTranscodePercent(0)
-        try {
-          prepared = await transcodeToMp4(prepared, {
-            signal: controller.signal,
-            onProgress: (r) => setTranscodePercent(Math.round(r * 100)),
-          })
-        } finally {
-          setTranscodePercent(null)
-        }
       }
 
       const safeName = prepared.name.replace(/[^\w.-]/g, '_')
@@ -839,31 +758,29 @@ export default function UploadPage() {
                 />
                 {codecWarn && (
                   <p className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-800">
-                    该视频是 iPhone 的 HEVC 格式，在 Windows 浏览器上通常只有声音没有画面。上传时会自动转码为通用格式（HEVC
-                    → MP4，约需一两分钟），转码后各设备都能正常播放。
+                    该视频可能是 iPhone 的 HEVC 格式，在部分电脑浏览器上只有声音没有画面。请让拍摄设备的相机格式改为【兼容性最佳】后重新拍摄上传。
                   </p>
                 )}
+                <p className="text-xs text-muted-foreground">
+                  为了确保视频在所有设备上能顺利播放，建议在 iPhone 设置 -&gt; 相机 -&gt; 格式 中，选择【兼容性最佳】后再拍摄上传哦。
+                </p>
               </div>
 
-              {/* 进度：转码阶段显示转码百分比，之后显示上传百分比 + 速度 + 预计剩余 */}
+              {/* 进度：上传百分比 + 速度 + 预计剩余 */}
               {uploading && (
                 <div className="flex flex-col gap-1">
                   <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
                     <div
                       className="h-full rounded-full bg-primary transition-[width] duration-200"
-                      style={{ width: `${transcodePercent ?? progress?.percent ?? 0}%` }}
+                      style={{ width: `${progress?.percent ?? 0}%` }}
                     />
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    {transcodePercent !== null
-                      ? `正在转码为通用格式（HEVC → MP4）：${transcodePercent}%${
-                          transcodePercent === 0 ? '，首次需加载转码组件约 30MB，请稍候' : ''
+                    {progress
+                      ? `${progress.percent}% · ${humanSize(progress.loaded)}/${humanSize(progress.total)} · ${progress.speed.toFixed(1)}MB/s${
+                          progress.eta > 0.5 ? ` · 剩余约 ${Math.ceil(progress.eta)} 秒` : ''
                         }`
-                      : progress
-                        ? `${progress.percent}% · ${humanSize(progress.loaded)}/${humanSize(progress.total)} · ${progress.speed.toFixed(1)}MB/s${
-                            progress.eta > 0.5 ? ` · 剩余约 ${Math.ceil(progress.eta)} 秒` : ''
-                          }`
-                        : '正在压缩图片并准备上传…'}
+                      : '正在压缩图片并准备上传…'}
                   </p>
                   {stalling && (
                     <p className="text-xs text-amber-600">网络波动，正在自动续传（已传部分不会重传）…</p>
@@ -874,11 +791,9 @@ export default function UploadPage() {
               <div className="flex gap-2">
                 <Button type="submit" disabled={!canSubmit} className="flex-1">
                   {uploading
-                    ? transcodePercent !== null
-                      ? `转码中 ${transcodePercent}%`
-                      : progress
-                        ? `上传中 ${progress.percent}%`
-                        : '处理中…'
+                    ? progress
+                      ? `上传中 ${progress.percent}%`
+                      : '处理中…'
                     : '上传并保存'}
                 </Button>
                 {uploading && (
