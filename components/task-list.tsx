@@ -1,22 +1,191 @@
 'use client'
 
-import { Monitor, School } from 'lucide-react'
+import Link from 'next/link'
+import { useState, useEffect } from 'react'
+import { ChevronRight } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Progress } from '@/components/ui/progress'
-import { useAppState } from '@/components/app-state-provider'
+import { useAuth } from '@/components/auth-provider'
 import type { CheckInTask } from '@/lib/mock-data'
-import { getSubjectMeta } from '@/lib/subject-meta'
 import { cn } from '@/lib/utils'
+import { supabase } from '@/lib/supabase'
+import { todayDateKey } from '@/lib/supabase-adapter'
+import { handleTeacherCheckin } from '@/lib/rewards'
 
-const modeLabel = { online: '线上', offline: '线下' } as const
-const doneLabel = { online: '已打卡', offline: '已签到' } as const
-const todoLabel = { online: '待打卡', offline: '待签到' } as const
+const DONE_LABEL = '已打卡'
+const TODO_LABEL = '未打卡'
 
-export function TaskList({ tasks, showSubject = true }: { tasks: CheckInTask[]; showSubject?: boolean }) {
-  const { subjects, toggleTask } = useAppState()
-  const doneCount = tasks.filter((t) => t.status === 'done').length
-  const percent = tasks.length ? Math.round((doneCount / tasks.length) * 100) : 0
+/** 任务标题 → 对应模块入口；用于孩子端点任务直达打卡 */
+const TITLE_ROUTE_RULES: { pattern: RegExp; href: string }[] = [
+  { pattern: /识字|认字/, href: '/chinese/literacy' },
+  { pattern: /拼音/, href: '/chinese/pinyin' },
+  { pattern: /古诗|背诵/, href: '/chinese/poem' },
+  { pattern: /口算|加减|比大小|点数|找规律|数学/, href: '/math' },
+  { pattern: /字母/, href: '/english/alphabet' },
+  { pattern: /单词|词汇|绘本/, href: '/english/vocab' },
+  { pattern: /拼读/, href: '/english/phonics' },
+  { pattern: /思维|数独|记忆|翻牌/, href: '/thinking' },
+  { pattern: /冒险/, href: '/adventure' },
+]
+
+/** 解析孩子端任务点击后要去的位置：teacher → 资料库；self → 对应模块 */
+function resolveTaskHref(task: CheckInTask): string | null {
+  // 老师资料类任务：跳到该课程最新日期的资料库页
+  if (task.format === 'teacher') {
+    return `/library?course=${encodeURIComponent(task.title)}&latest=1`
+  }
+  // 自学类任务：优先任务自带的模块路由，其次按标题关键词匹配，最后回退学科页
+  if (task.gameRoute) return task.gameRoute
+  const rule = TITLE_ROUTE_RULES.find((r) => r.pattern.test(task.title))
+  if (rule) return rule.href
+  return task.subjectId ? `/subject/${task.subjectId}` : null
+}
+
+export function TaskList({
+  tasks,
+  dateKey,
+}: {
+  tasks: CheckInTask[]
+  /** 可选。打卡写入哪一天（YYYY-MM-DD）。不传则用今天。首页切换周几 Tab 时传入。 */
+  dateKey?: string
+}) {
+  // 本地乐观状态：从 props 初始化 + 当 props 变更（Server Component 刷新）时同步
+  const [localTasks, setLocalTasks] = useState<CheckInTask[]>(() => tasks)
+  const { user, role } = useAuth()
+  /** 家长端为测试模式：结算流程照常运行，但不写 checkins / star_ledger */
+  const isParent = role === 'parent'
+
+  useEffect(() => {
+    setLocalTasks(tasks)
+  }, [tasks])
+
+  const doneCount = localTasks.filter((t) => t.status === 'done').length
+  const percent = localTasks.length ? Math.round((doneCount / localTasks.length) * 100) : 0
+
+  /** 打卡/取消打卡：乐观更新 + Supabase checkins insert/delete */
+  const handleToggle = async (taskId: string) => {
+    const task = localTasks.find((t) => t.id === taskId)
+    if (!task) return
+
+    const willDo = task.status !== 'done'
+    // 乐观更新
+    setLocalTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, status: willDo ? 'done' : 'todo' } : t)))
+
+    try {
+      const key = dateKey ?? todayDateKey()
+      const testPrefix = isParent ? '【测试模式】' : ''
+
+      // Teacher 课程打卡：走统一结算（基础 2 星 + 连续 5 天额外 3 星）
+      if (willDo && task.format === 'teacher') {
+        const { earned, isStreakBonus } = await handleTeacherCheckin(taskId, user?.id ?? '', isParent)
+        if (earned > 0) {
+          if (isStreakBonus) {
+            window.alert(`${testPrefix}太棒了！连续打卡 5 天，额外获得 3 颗星星⭐⭐⭐！`)
+          } else {
+            window.alert(`${testPrefix}打卡成功！获得 2 颗星星⭐`)
+          }
+        }
+        return
+      }
+
+      // 家长端测试模式：自学类任务不写库，仅本地 UI 模拟
+      if (isParent) {
+        return
+      }
+
+      if (!supabase) {
+        console.warn('[TaskList] Supabase 未初始化，只做了本地 UI 更新')
+        return
+      }
+
+      if (willDo) {
+        // 自学类打卡：插入 checkins
+        const { error } = await supabase.from('checkins').upsert({ task_id: taskId, checkin_date: key })
+        if (error) throw error
+      } else {
+        // 取消打卡：删除
+        const { error } = await supabase
+          .from('checkins')
+          .delete()
+          .eq('task_id', taskId)
+          .eq('checkin_date', key)
+        if (error) throw error
+      }
+    } catch (err) {
+      console.error('[TaskList] checkins 写入失败，回滚 UI:', err)
+      setLocalTasks((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, status: willDo ? 'todo' : 'done' } : t)),
+      )
+    }
+  }
+
+  const todoTasks = localTasks.filter((t) => t.status !== 'done')
+  const doneTasks = localTasks.filter((t) => t.status === 'done')
+
+  /** 渲染一条任务。teacher → 资料库；self → 对应模块做游戏 */
+  const renderTask = (task: CheckInTask) => {
+    const done = task.status === 'done'
+    const isTeacher = task.format === 'teacher'
+    // 家长和孩子端统一：teacher → 资料库；self → 对应模块做游戏
+    const href = resolveTaskHref(task)
+    const titleClass = cn(
+      'min-w-0 flex-1 truncate font-medium',
+      done && 'text-muted-foreground line-through',
+    )
+    const badge = (
+      <Badge variant={done ? 'secondary' : 'outline'} className={cn(!done && 'text-muted-foreground')}>
+        {done ? DONE_LABEL : TODO_LABEL}
+      </Badge>
+    )
+    return (
+      <li key={task.id}>
+        <div
+          className={cn(
+            'flex items-center gap-3 rounded-xl border bg-card p-3 transition-colors hover:bg-muted/60',
+            done && 'bg-muted/50',
+          )}
+        >
+          <Checkbox
+            id={`task-${task.id}`}
+            checked={done}
+            onCheckedChange={() => handleToggle(task.id)}
+            aria-label={`${task.title} ${done ? '取消打卡' : '打卡'}`}
+          />
+          {href ? (
+            <Link
+              href={href}
+              aria-label={`去完成 ${task.title}`}
+              className="flex min-w-0 flex-1 items-center gap-2 transition-opacity active:opacity-70"
+            >
+              <span className={titleClass}>{task.title}</span>
+              {badge}
+              <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            </Link>
+          ) : (
+            <>
+              {isTeacher ? (
+                <Link
+                  href={`/library?course=${encodeURIComponent(task.title)}&latest=1`}
+                  className={cn(
+                    titleClass,
+                    'underline decoration-muted-foreground/40 underline-offset-4',
+                  )}
+                >
+                  {task.title}
+                </Link>
+              ) : (
+                <label htmlFor={`task-${task.id}`} className={cn(titleClass, 'cursor-pointer')}>
+                  {task.title}
+                </label>
+              )}
+              {badge}
+            </>
+          )}
+        </div>
+      </li>
+    )
+  }
 
   return (
     <section aria-labelledby="task-list-title" className="flex flex-col gap-3">
@@ -25,64 +194,38 @@ export function TaskList({ tasks, showSubject = true }: { tasks: CheckInTask[]; 
           打卡任务
         </h2>
         <span className="text-sm text-muted-foreground">
-          {doneCount}/{tasks.length} 已完成
+          {doneTasks.length}/{localTasks.length} 已完成
         </span>
       </div>
       <Progress value={percent} aria-label={`完成进度 ${percent}%`} />
 
-      {tasks.length === 0 ? (
-        <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">暂无打卡任务</p>
+      {localTasks.length === 0 ? (
+        <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+          这一天没有排打卡任务 🎉
+        </p>
       ) : (
-        <ul className="flex flex-col gap-2">
-          {tasks.map((task) => {
-            const done = task.status === 'done'
-            const meta = getSubjectMeta(task.subjectId)
-            const subjectName = subjects.find((s) => s.id === task.subjectId)?.name
-            const ModeIcon = task.mode === 'online' ? Monitor : School
-            const inputId = `task-${task.id}`
-            return (
-              <li key={task.id}>
-                <label
-                  htmlFor={inputId}
-                  className={cn(
-                    'flex cursor-pointer items-center gap-3 rounded-xl border bg-card p-3 transition-colors hover:bg-muted/60',
-                    done && 'bg-muted/50',
-                  )}
-                >
-                  <Checkbox id={inputId} checked={done} onCheckedChange={() => toggleTask(task.id)} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {showSubject && (
-                        <span className={cn('rounded-md px-1.5 py-0.5 text-[11px] font-medium', meta.tint)}>
-                          {subjectName}
-                        </span>
-                      )}
-                      <Badge
-                        variant="outline"
-                        className={cn(
-                          task.mode === 'online'
-                            ? 'border-sky-200 text-sky-700'
-                            : 'border-amber-200 text-amber-700',
-                        )}
-                      >
-                        <ModeIcon data-icon="inline-start" aria-hidden="true" />
-                        {modeLabel[task.mode]}
-                      </Badge>
-                    </div>
-                    <p className={cn('mt-1 font-medium', done && 'text-muted-foreground line-through')}>{task.title}</p>
-                    <p className="text-xs text-muted-foreground">{task.detail}</p>
-                  </div>
-                  <Badge
-                    variant={done ? 'secondary' : 'outline'}
-                    className={cn(!done && 'text-muted-foreground')}
-                  >
-                    {done ? doneLabel[task.mode] : todoLabel[task.mode]}
-                  </Badge>
-                </label>
-              </li>
-            )
-          })}
-        </ul>
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <h3 className="px-1 text-sm font-semibold text-muted-foreground">
+              未打卡（{todoTasks.length}）
+            </h3>
+            {todoTasks.length > 0 ? (
+              <ul className="flex flex-col gap-2">{todoTasks.map(renderTask)}</ul>
+            ) : (
+              <p className="rounded-xl border border-dashed p-4 text-center text-sm text-muted-foreground">
+                全部完成 🎉
+              </p>
+            )}
+          </div>
+          {doneTasks.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <h3 className="px-1 text-sm font-semibold text-muted-foreground">
+                已打卡（{doneTasks.length}）
+              </h3>
+              <ul className="flex flex-col gap-2">{doneTasks.map(renderTask)}</ul>
+            </div>
+          )}
+        </div>
       )}
     </section>
   )

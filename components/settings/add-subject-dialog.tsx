@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, type FormEvent } from 'react'
-import { useAppState } from '@/components/app-state-provider'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -14,26 +13,41 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import type { Subject } from '@/lib/mock-data'
 
-export function AddSubjectDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const { subjects, addSubject } = useAppState()
+type Props = {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onSubmit?: (name: string, showInTab: boolean) => Promise<void> | void
+  subjects?: Subject[]
+}
+
+export function AddSubjectDialog({ open, onOpenChange, onSubmit, subjects = [] }: Props) {
   const [name, setName] = useState('')
   const [showInTab, setShowInTab] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
 
   const trimmed = name.trim()
   const duplicate = subjects.some((s) => s.name === trimmed)
 
   const close = () => {
-    setName('')
-    setShowInTab(true)
-    onOpenChange(false)
+    if (!submitting) {
+      setName('')
+      setShowInTab(true)
+      onOpenChange(false)
+    }
   }
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
-    if (!trimmed || duplicate) return
-    addSubject(trimmed, showInTab)
-    close()
+    if (!trimmed || duplicate || submitting) return
+    setSubmitting(true)
+    try {
+      await onSubmit?.(trimmed, showInTab)
+      close()
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -59,14 +73,14 @@ export function AddSubjectDialog({ open, onOpenChange }: { open: boolean; onOpen
           </div>
           <div className="flex items-center justify-between">
             <Label htmlFor="subject-show-in-tab">显示在底部 Tab</Label>
-            <Switch id="subject-show-in-tab" checked={showInTab} onCheckedChange={setShowInTab} />
+            <Switch id="subject-show-in-tab" checked={showInTab} onCheckedChange={() => setShowInTab((v) => !v)} />
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={close}>
+            <Button type="button" variant="outline" onClick={close} disabled={submitting}>
               取消
             </Button>
-            <Button type="submit" disabled={!trimmed || duplicate}>
-              确认
+            <Button type="submit" disabled={!trimmed || duplicate || submitting}>
+              {submitting ? '提交中…' : '确认'}
             </Button>
           </DialogFooter>
         </form>

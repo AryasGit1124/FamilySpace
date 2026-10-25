@@ -161,3 +161,27 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* 小游戏答错时的抖动反馈 */
+@keyframes math-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-6px);
+  }
+  40% {
+    transform: translateX(6px);
+  }
+  60% {
+    transform: translateX(-4px);
+  }
+  80% {
+    transform: translateX(4px);
+  }
+}
+
+.math-shake {
+  animation: math-shake 0.4s ease-in-out;
+}

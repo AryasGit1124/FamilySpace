@@ -5,6 +5,10 @@ export type Subject = {
   name: string
   description: string
   showInTab: boolean
+  /** Supabase subjects.color (可选，mock 数据没有) */
+  color?: string
+  /** Supabase subjects.sort_order (可选) */
+  sortOrder?: number
 }
 
 export type TaskMode = 'online' | 'offline'
@@ -16,6 +20,10 @@ export type CheckInTask = {
   title: string
   detail: string
   mode: TaskMode
+  /** 任务形式：teacher=老师上传资料类（点击跳资料库），self=自己完成打卡 */
+  format?: 'teacher' | 'self'
+  /** 任务对应的模块路由（如识字乐园 /chinese/literacy），孩子端点击直达 */
+  gameRoute?: string
   status: TaskStatus
   inWeeklyPlan: boolean
 }
@@ -25,6 +33,8 @@ export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7
 export type ScheduleEntry = {
   id: string
   subjectId: SubjectId
+  /** 对应 tasks 的 id —— 用于从今日页跳转上传页时预选课程 */
+  taskId?: string
   title: string
   location: string
   weekday: Weekday

@@ -40,7 +40,7 @@ export function SubjectView({ subjectId }: { subjectId: SubjectId }) {
       />
       <div className="flex flex-col gap-6 px-5">
         <SubjectScheduleCard subjectId={subjectId} />
-        <TaskList tasks={tasks.filter((t) => t.subjectId === subjectId)} showSubject={false} />
+        <TaskList tasks={tasks.filter((t) => t.subjectId === subjectId)} />
       </div>
     </>
   )

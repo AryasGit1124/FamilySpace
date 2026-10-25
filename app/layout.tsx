@@ -1,6 +1,8 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
+import { LayoutWrapper } from '@/app/components/LayoutWrapper'
 import { AppStateProvider } from '@/components/app-state-provider'
+import { AuthProvider } from '@/components/auth-provider'
 import { BottomTabBar } from '@/components/bottom-tab-bar'
 import './globals.css'
 
@@ -42,11 +44,15 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body className="antialiased">
-        <AppStateProvider>
-          <main className="mx-auto min-h-dvh max-w-md pb-28">{children}</main>
-          <BottomTabBar />
-        </AppStateProvider>
+      <body className="min-h-screen bg-gray-50 antialiased">
+        <AuthProvider>
+          <AppStateProvider>
+            <LayoutWrapper>
+              <main className="mx-auto w-full max-w-md">{children}</main>
+            </LayoutWrapper>
+            <BottomTabBar />
+          </AppStateProvider>
+        </AuthProvider>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>
