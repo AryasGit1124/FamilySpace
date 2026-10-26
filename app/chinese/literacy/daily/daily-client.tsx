@@ -399,7 +399,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                 {level} 级还没有汉字，先在 literacy_chars 表里补充数据吧
               </p>
             ) : (
-              <ul className="grid grid-cols-4 gap-2 sm:grid-cols-6 lg:grid-cols-8">
+              <ul className="grid grid-cols-4 gap-2 md:grid-cols-6 md:gap-4 lg:grid-cols-8">
                 {chars.map((c) => {
                   const status = mastery[c.id]
                   return (
@@ -409,7 +409,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                         onClick={() => openTest(c)}
                         aria-label={`测试汉字 ${c.char}`}
                         className={cn(
-                          'relative flex aspect-square w-full items-center justify-center rounded-xl border bg-card text-3xl font-bold shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md',
+                          'relative flex aspect-square min-h-[60px] w-full items-center justify-center rounded-xl border bg-card text-3xl font-bold shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md md:min-h-[100px] md:rounded-2xl md:text-5xl lg:text-6xl',
                           status === 'mastered' && 'border-emerald-300 bg-emerald-50 text-emerald-700 shadow-none',
                           status === 'review' && 'border-red-300 bg-red-50 text-red-700 shadow-none',
                         )}
@@ -440,7 +440,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
 
         {/* ════════ Step 2：学字卡 ════════ */}
         {step === 2 && (
-          <>
+          <div className="flex flex-col gap-4 md:mx-auto md:w-full md:max-w-2xl lg:max-w-3xl">
             {todayLearnChars.length === 0 ? (
               <div className="flex flex-col items-center gap-4 rounded-2xl border bg-card p-8 text-center">
                 <p className="text-lg font-bold">本级没有需要学的新字 🎉</p>
@@ -455,21 +455,23 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                   type="button"
                   onClick={flipCard}
                   aria-label={`字卡 ${currentCard.char}，点击翻转并朗读`}
-                  className="flex h-72 w-full flex-col items-center justify-center gap-3 rounded-3xl border-2 bg-card transition-all hover:bg-muted/40"
+                  className="flex h-72 w-full flex-col items-center justify-center gap-3 rounded-3xl border-2 bg-card transition-all hover:bg-muted/40 md:h-96"
                 >
                   {!flipped ? (
                     <>
-                      <span className="text-9xl font-bold leading-none">{currentCard.char}</span>
-                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                        <Volume2 className="size-3.5" aria-hidden="true" />
+                      <span className="text-9xl font-bold leading-none md:text-[10rem] lg:text-[11rem]">{currentCard.char}</span>
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground md:text-base">
+                        <Volume2 className="size-3.5 md:size-5" aria-hidden="true" />
                         点击听读音、看拼音
                       </span>
                     </>
                   ) : (
                     <>
-                      <span className="text-5xl font-bold text-primary">{currentCard.pinyin ?? currentCard.char}</span>
-                      <span className="text-2xl text-muted-foreground">{currentCard.char}</span>
-                      <span className="text-xs text-muted-foreground">再点一次翻回</span>
+                      <span className="text-5xl font-bold text-primary md:text-7xl">
+                        {currentCard.pinyin ?? currentCard.char}
+                      </span>
+                      <span className="text-2xl text-muted-foreground md:text-4xl">{currentCard.char}</span>
+                      <span className="text-xs text-muted-foreground md:text-base">再点一次翻回</span>
                     </>
                   )}
                 </button>
@@ -501,7 +503,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
               下一步：听音识字
               <ArrowRight className="size-4" aria-hidden="true" />
             </Button>
-          </>
+          </div>
         )}
 
         {/* ════════ Step 3：听音识字 ════════ */}
@@ -517,9 +519,9 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                 speakChar(currentQ.target.char, currentQ.target.pinyin)
               }}
               aria-label="重听读音"
-              className="mx-auto flex size-24 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105"
+              className="mx-auto flex size-24 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 md:size-32"
             >
-              <Volume2 className="size-10" aria-hidden="true" />
+              <Volume2 className="size-10 md:size-14" aria-hidden="true" />
             </button>
             <div className="grid grid-cols-2 gap-3">
               {currentQ.options.map((opt) => {
@@ -532,7 +534,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                     onClick={() => answer(opt)}
                     disabled={wrong}
                     className={cn(
-                      'flex h-28 items-center justify-center rounded-2xl border-2 bg-card text-5xl font-bold transition-all hover:bg-muted/40 disabled:cursor-not-allowed',
+                      'flex h-28 items-center justify-center rounded-2xl border-2 bg-card text-5xl font-bold transition-all hover:bg-muted/40 disabled:cursor-not-allowed md:h-36 md:text-7xl',
                       wrong && 'math-shake border-destructive bg-destructive/10 text-destructive opacity-50',
                       correct && 'border-emerald-500 bg-emerald-50 text-emerald-700',
                     )}
@@ -553,7 +555,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
 
         {/* ════════ Step 4：AI 专属故事（听完才能打卡） ════════ */}
         {step === 4 && (
-          <div className="flex flex-col items-center gap-4 rounded-2xl border bg-card p-6">
+          <div className="flex w-full flex-col items-center gap-4 rounded-2xl border bg-card p-6 md:mx-auto md:max-w-3xl md:p-8">
             <p className="flex items-center gap-2 text-lg font-bold">
               <BookOpenText className="size-5 text-primary" aria-hidden="true" />
               今天的故事
@@ -584,7 +586,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                   .split(/(?<=[。！？；!?；\n])/)
                   .filter((line) => line.trim())
                   .map((line, li) => (
-                    <p key={li} className="text-xl leading-loose tracking-wide">
+                    <p key={li} className="text-xl leading-loose tracking-wide md:text-3xl">
                       {[...line].map((ch, ci) =>
                         highlightChars.has(ch) ? (
                           <span key={ci} className="font-bold text-red-500">
@@ -638,10 +640,10 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
         )}
       </div>
 
-      {/* Step 1 测试弹窗 */}
+      {/* Step 1 测试弹窗：挂载在页面根节点下，fixed inset-0 相对视口定位，不受字墙容器影响 */}
       {step === 1 && active && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-5"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={() => {
             if (!saving) setActive(null)
           }}
@@ -650,7 +652,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
             role="dialog"
             aria-modal="true"
             aria-label={`测试汉字 ${active.char}`}
-            className="relative flex w-full max-w-sm flex-col items-center gap-5 rounded-3xl bg-card p-8 shadow-xl"
+            className="bg-white rounded-3xl shadow-2xl w-full max-w-sm md:max-w-2xl lg:max-w-4xl h-auto min-h-[50vh] flex flex-col items-center justify-center relative p-6"
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -669,20 +671,33 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                 speakChar(active.char, active.pinyin)
               }}
               aria-label={`重听汉字 ${active.char} 的读音`}
-              className="flex flex-col items-center gap-2 rounded-2xl px-6 py-2 transition-colors hover:bg-muted/40"
+              className="flex flex-col items-center rounded-2xl transition-colors hover:bg-muted/40"
             >
-              <span className="text-9xl font-bold leading-none">{active.char}</span>
-              {active.pinyin && <span className="text-lg text-muted-foreground">{active.pinyin}</span>}
-              <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                <Volume2 className="size-3.5" aria-hidden="true" />
+              <span className="text-[8rem] md:text-[12rem] lg:text-[16rem] font-bold leading-none">
+                {active.char}
+              </span>
+              {active.pinyin && (
+                <span className="text-3xl md:text-5xl text-gray-500 mt-4">{active.pinyin}</span>
+              )}
+              <span className="mt-4 flex items-center gap-1 text-sm text-muted-foreground md:text-lg">
+                <Volume2 className="size-4 md:size-6" aria-hidden="true" />
                 点击重听
               </span>
             </button>
-            <div className="flex w-full gap-3">
-              <Button variant="outline" className="h-14 flex-1 text-lg" disabled={saving} onClick={() => mark('review')}>
+            <div className="w-full max-w-md flex gap-4 md:gap-8 mt-8">
+              <Button
+                variant="outline"
+                className="flex-1 py-4 md:py-6 text-2xl md:text-4xl font-bold rounded-2xl"
+                disabled={saving}
+                onClick={() => mark('review')}
+              >
                 不认识
               </Button>
-              <Button className="h-14 flex-1 text-lg" disabled={saving} onClick={() => mark('mastered')}>
+              <Button
+                className="flex-1 py-4 md:py-6 text-2xl md:text-4xl font-bold rounded-2xl"
+                disabled={saving}
+                onClick={() => mark('mastered')}
+              >
                 认识了
               </Button>
             </div>

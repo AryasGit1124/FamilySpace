@@ -58,25 +58,27 @@ export default async function SubjectPage({ params }: { params: Promise<{ id: st
         }
       />
       <div className="flex flex-col gap-6 px-5">
-        {/* 学科子模块入口卡片（注册表见 lib/subject-modules.ts） */}
-        {SUBJECT_MODULES.filter((m) => m.subjectName === subject.name).map((m) => {
-          const ModuleIcon = m.icon
-          return (
-            <Link
-              key={m.title}
-              href={m.gameRoute}
-              className="flex items-center gap-3 rounded-2xl border bg-card p-4 transition-colors hover:bg-muted/50"
-            >
-              <span className={cn('flex size-12 items-center justify-center rounded-2xl', m.tint)}>
-                <ModuleIcon className="size-6" aria-hidden="true" />
-              </span>
-              <span>
-                <span className="block font-semibold">{m.title}</span>
-                <span className="mt-0.5 block text-xs text-muted-foreground">{m.desc}</span>
-              </span>
-            </Link>
-          )
-        })}
+        {/* 学科子模块入口卡片（注册表见 lib/subject-modules.ts）：iPad 上多列排布 */}
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+          {SUBJECT_MODULES.filter((m) => m.subjectName === subject.name).map((m) => {
+            const ModuleIcon = m.icon
+            return (
+              <Link
+                key={m.title}
+                href={m.gameRoute}
+                className="flex items-center gap-3 rounded-2xl border bg-card p-4 transition-colors hover:bg-muted/50"
+              >
+                <span className={cn('flex size-12 items-center justify-center rounded-2xl', m.tint)}>
+                  <ModuleIcon className="size-6" aria-hidden="true" />
+                </span>
+                <span>
+                  <span className="block font-semibold">{m.title}</span>
+                  <span className="mt-0.5 block text-xs text-muted-foreground">{m.desc}</span>
+                </span>
+              </Link>
+            )
+          })}
+        </div>
         <AiGameSection subjectId={subject.id} subjectName={subject.name} games={games} />
       </div>
     </>

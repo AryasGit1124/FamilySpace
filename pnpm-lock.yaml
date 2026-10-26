@@ -69,6 +69,9 @@ importers:
         specifier: ^1.4.0
         version: 1.4.0
     devDependencies:
+      '@csstools/postcss-cascade-layers':
+        specifier: ^6.0.2
+        version: 6.0.2(postcss@8.5.6)
       '@tailwindcss/postcss':
         specifier: ^4.3.3
         version: 4.3.3
@@ -256,6 +259,18 @@ packages:
     peerDependenciesMeta:
       '@types/react':
         optional: true
+
+  '@csstools/postcss-cascade-layers@6.0.2':
+    resolution: {integrity: sha512-oquOebjbbW8QsAdj8NnwQKoIk5PoPjglXgHlP2m8zKbtde1TQJ9JdvzzPA3pedpgNPejOU5J+42g5rbHwVYdYw==}
+    engines: {node: '>=20.19.0'}
+    peerDependencies:
+      postcss: ^8.4
+
+  '@csstools/selector-specificity@6.0.1':
+    resolution: {integrity: sha512-MBuqFIIvqk4S593MGAskTkPpEUUzZNvGzh8mMxEwl3oHwjQlXmqHEDxNbN3Y0Tsh+xjmem4GZjeg7I0qkwBivg==}
+    engines: {node: '>=20.19.0'}
+    peerDependencies:
+      postcss-selector-parser: ^7.1.1
 
   '@date-fns/tz@1.4.1':
     resolution: {integrity: sha512-P5LUNhtbj6YfI3iJjw5EL9eUAG6OitD0W3fWQcpQjDRc/QIsL0tRNuO1PcDvPccWL1fSTXXdE1ds+l95DV/OFA==}
@@ -2368,6 +2383,16 @@ snapshots:
       use-sync-external-store: 1.6.0(react@19.2.4)
     optionalDependencies:
       '@types/react': 19.2.14
+
+  '@csstools/postcss-cascade-layers@6.0.2(postcss@8.5.6)':
+    dependencies:
+      '@csstools/selector-specificity': 6.0.1(postcss-selector-parser@7.1.1)
+      postcss: 8.5.6
+      postcss-selector-parser: 7.1.1
+
+  '@csstools/selector-specificity@6.0.1(postcss-selector-parser@7.1.1)':
+    dependencies:
+      postcss-selector-parser: 7.1.1
 
   '@date-fns/tz@1.4.1':
     optional: true

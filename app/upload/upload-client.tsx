@@ -458,7 +458,8 @@ export default function UploadPage() {
     }
   }
 
-  const canSubmit = !uploading && !!file && !!courseId && !!mediaDate
+  // 文件与文字二选一（也可同时存在）：都没填才禁止提交
+  const canSubmit = !uploading && !!courseId && !!mediaDate && (!!file || note.trim().length > 0)
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -468,15 +469,18 @@ export default function UploadPage() {
       setFeedback({ type: 'error', text: '请先选择课程（课表里暂无课程时，请先去课表设置添加）' })
       return
     }
-    if (!file) {
-      setFeedback({ type: 'error', text: '请先选择要上传的视频或图片' })
+    const textContent = note.trim()
+    if (!file && !textContent) {
+      setFeedback({ type: 'error', text: '请选择一个文件，或填写文字作业内容' })
       return
     }
     // 提交前再校验一次（防止绕过选择阶段）
-    const err = validateFile(file)
-    if (err) {
-      setFeedback({ type: 'error', text: err })
-      return
+    if (file) {
+      const err = validateFile(file)
+      if (err) {
+        setFeedback({ type: 'error', text: err })
+        return
+      }
     }
     if (!supabase) {
       setFeedback({ type: 'error', text: 'Supabase 未初始化，请检查 .env.local 配置' })
@@ -488,6 +492,32 @@ export default function UploadPage() {
     setFeedback(null)
     setUploading(true)
     setProgress(null)
+
+    // 纯文字作业：不调存储接口，直接写 media 表（file_type='text'，file_url 留空）
+    if (!file) {
+      try {
+        await insertMedia({
+          course_id: courseId,
+          course_name: courseName,
+          child_name: null,
+          offline_class: offlineClass || null,
+          media_date: mediaDate,
+          file_url: '',
+          file_type: 'text',
+          note: textContent,
+          uploader_name: '妈妈',
+        })
+        setFeedback({ type: 'success', text: `文字作业已保存：${courseName} · ${mediaDate} 已保存到本周资料库` })
+        // 清掉缓存，下一次重复检测会拿到最新数据
+        mediaRef.current = null
+        setNote('')
+      } catch (insertErr) {
+        setFeedback({ type: 'error', text: `保存记录失败：${errMsg(insertErr)}` })
+      } finally {
+        setUploading(false)
+      }
+      return
+    }
     setStalling(false)
     const controller = new AbortController()
     abortRef.current = controller
@@ -656,7 +686,12 @@ export default function UploadPage() {
             <CardDescription>填写信息并选择文件，保存后会出现在本周视频库</CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <form
+              onSubmit={handleSubmit}
+              className="grid grid-cols-1 gap-4 md:grid-cols-2 md:items-start md:gap-6"
+            >
+              {/* 左栏：课程 / 日期 / 线下课 / 备注（手机单列，iPad 左右分栏） */}
+              <div className="flex flex-col gap-4">
               {/* 课程名称 —— 读取课表真实课程 */}
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="course-id">课程名称</Label>
@@ -717,23 +752,28 @@ export default function UploadPage() {
                 )}
               </div>
 
-              {/* 备注 */}
+              {/* 备注 / 文字作业 */}
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="note">备注（可选）</Label>
+                <Label htmlFor="note">文字作业 / 备注</Label>
                 <textarea
                   id="note"
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
-                  placeholder="例如：Unit 3 单词跟读，发音有进步"
-                  rows={3}
-                  maxLength={200}
+                  placeholder="可直接粘贴老师发的文字作业，例如：抄写第 3 课生字各 2 遍；也可以只作为文件的备注"
+                  rows={4}
+                  maxLength={2000}
                   className="w-full resize-none rounded-lg border border-input bg-transparent px-3 py-2 text-sm shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
                 />
+                <p className="text-xs text-muted-foreground">不选文件、只填文字也可以保存，会作为「文字作业」出现在资料库</p>
               </div>
 
+              </div>
+
+              {/* 右栏：文件选择 + 上传进度 + 提交（手机仍在下方，iPad 在右侧） */}
+              <div className="flex flex-col gap-4">
               {/* 文件选择 */}
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="media-file">视频 / 图片文件</Label>
+                <Label htmlFor="media-file">视频 / 图片文件（可选）</Label>
                 <label
                   htmlFor="media-file"
                   className="flex cursor-pointer flex-col items-center gap-1 rounded-xl border border-dashed p-5 text-center transition-colors hover:bg-muted/40"
@@ -794,7 +834,9 @@ export default function UploadPage() {
                     ? progress
                       ? `上传中 ${progress.percent}%`
                       : '处理中…'
-                    : '上传并保存'}
+                    : file
+                      ? '上传并保存'
+                      : '保存文字作业'}
                 </Button>
                 {uploading && (
                   <Button
@@ -805,6 +847,7 @@ export default function UploadPage() {
                     取消上传
                   </Button>
                 )}
+              </div>
               </div>
             </form>
           </CardContent>

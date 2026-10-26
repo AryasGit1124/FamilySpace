@@ -123,6 +123,8 @@ export default function LoginPage() {
   const [busy, setBusy] = useState<Mode | null>(null)
   const [error, setError] = useState('')
   const [fromLink, setFromLink] = useState(false)
+  /** 默认选中「加入家庭」，第一次使用的人再切到「创建新家庭」 */
+  const [mode, setMode] = useState<Mode>('join')
 
   // 别人分享的邀请链接形如 /login?code=ABC123，打开后自动填好邀请码
   useEffect(() => {
@@ -229,7 +231,7 @@ export default function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-b from-amber-50 via-orange-50 to-white px-5 py-10">
-      <div className="w-full max-w-sm">
+      <div className="mx-auto w-full max-w-md">
         <div className="mb-6 text-center">
           <p className="text-5xl" aria-hidden="true">
             ⭐
@@ -268,51 +270,85 @@ export default function LoginPage() {
             })}
           </div>
 
-          <div className="mt-4 flex flex-col gap-2">
-            <Label htmlFor="login-invite">家庭邀请码</Label>
-            <Input
-              id="login-invite"
-              value={inviteCode}
-              onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
-              placeholder="ABC123（加入已有家庭时填写）"
-              maxLength={6}
-              className="tracking-[0.2em]"
-            />
-            {fromLink && (
-              <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                已从邀请链接读取家庭码，确认身份后点「加入已有家庭」即可。
-              </p>
-            )}
+          {/* 模式切换：默认加入家庭，排在第一；创建新家庭放后面 */}
+          <div role="tablist" aria-label="选择登录方式" className="mt-4 grid grid-cols-2 gap-1 rounded-2xl bg-amber-50 p-1">
+            {([
+              { value: 'join' as const, label: '加入家庭' },
+              { value: 'create' as const, label: '创建新家庭' },
+            ]).map((tab) => {
+              const active = mode === tab.value
+              return (
+                <button
+                  key={tab.value}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => {
+                    setMode(tab.value)
+                    setError('')
+                  }}
+                  className={cn(
+                    'rounded-xl py-2 text-sm font-bold transition-colors',
+                    active ? 'bg-white text-amber-700 shadow-sm' : 'text-amber-700/60',
+                  )}
+                >
+                  {tab.label}
+                </button>
+              )
+            })}
           </div>
+
+          {mode === 'join' ? (
+            <div className="mt-4 flex flex-col gap-2">
+              <Label htmlFor="login-invite">家庭邀请码</Label>
+              <Input
+                id="login-invite"
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+                placeholder="ABC123（加入已有家庭时填写）"
+                maxLength={6}
+                className="tracking-[0.2em]"
+              />
+              {fromLink && (
+                <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                  已从邀请链接读取家庭码，确认身份后点「加入已有家庭」即可。
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="mt-4 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-700">
+              创建后会生成 6 位邀请码，把它发给家人，其他设备凭码加入。
+            </p>
+          )}
 
           {error && (
             <p className="mt-3 rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>
           )}
 
           <div className="mt-5 flex flex-col gap-2">
-            <Button
-              type="button"
-              className="h-12 w-full rounded-2xl text-base font-bold"
-              onClick={() => void handleCreate()}
-              disabled={busy !== null}
-            >
-              {busy === 'create' ? '正在创建…' : '创建新家庭'}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-12 w-full rounded-2xl text-base font-bold"
-              onClick={() => void handleJoin()}
-              disabled={busy !== null}
-            >
-              {busy === 'join' ? '正在加入…' : '加入已有家庭'}
-            </Button>
+            {mode === 'join' ? (
+              <Button
+                type="button"
+                className="h-12 w-full rounded-2xl text-base font-bold"
+                onClick={() => void handleJoin()}
+                disabled={busy !== null}
+              >
+                {busy === 'join' ? '正在加入…' : '加入已有家庭'}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                className="h-12 w-full rounded-2xl text-base font-bold"
+                onClick={() => void handleCreate()}
+                disabled={busy !== null}
+              >
+                {busy === 'create' ? '正在创建…' : '创建新家庭'}
+              </Button>
+            )}
           </div>
 
           <p className="mt-4 text-center text-xs leading-relaxed text-muted-foreground">
-            第一次使用请「创建新家庭」，创建后会显示 6 位邀请码；
-            <br />
-            其他设备输入邀请码后「加入已有家庭」。
+            已有家庭码请用「加入家庭」；第一次使用请切到「创建新家庭」。
           </p>
         </div>
       </div>

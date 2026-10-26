@@ -1,5 +1,6 @@
 import { requireSupabase } from '@/lib/supabase'
 import { resolveFamilyId, type UserRole } from '@/lib/family'
+import { shiftDate, todayStr } from '@/lib/dates'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -523,9 +524,8 @@ export async function fetchCheckinDates(days = 90): Promise<string[]> {
   const familyId = await resolveFamilyId()
   if (!familyId) return []
 
-  const since = new Date()
-  since.setDate(since.getDate() - days)
-  const sinceStr = since.toISOString().slice(0, 10)
+  // 以北京时间为准：UTC 直接偏移会卡在时区边界
+  const sinceStr = shiftDate(todayStr(), -days)
 
   const { data, error } = await scoped(
     supabase.from('checkins').select('checkin_date'),

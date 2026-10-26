@@ -12,7 +12,7 @@ export function Header({ onMenuOpen }: { onMenuOpen: () => void }) {
 
   return (
     <header className="fixed top-0 z-30 flex h-16 w-full items-center bg-white/80 px-4 backdrop-blur-md">
-      <div className="mx-auto flex w-full max-w-md items-center justify-between">
+      <div className="mx-auto flex w-full max-w-md items-center justify-between md:max-w-3xl lg:max-w-6xl">
         <span className="text-lg font-bold">我的学习台</span>
         <div className="flex items-center gap-2">
           <StarBadge />

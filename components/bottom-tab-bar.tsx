@@ -108,28 +108,29 @@ export function BottomTabBar() {
       aria-label="主导航"
       className="fixed bottom-0 z-30 h-20 w-full border-t bg-white pb-[env(safe-area-inset-bottom)]"
     >
-      <ul className="mx-auto flex h-full max-w-md">
+      {/* 手机端等分铺满；iPad 端（md+）收窄居中 + 固定间距，Tab 不再散落到屏幕两端 */}
+      <ul className="mx-auto flex h-full w-full max-w-md items-center justify-around md:gap-4 md:max-w-2xl">
         {tabs.map(({ href, label, icon: Icon, isActive }) => {
           const active = isActive ? isActive(pathname) : pathname.startsWith(href)
           return (
-            <li key={href} className="flex-1">
+            <li key={href} className="flex-1 md:flex-none">
               <Link
                 href={href}
                 aria-current={active ? 'page' : undefined}
                 className={cn(
-                  'flex h-full flex-col items-center justify-center gap-1 text-xs font-medium transition-colors',
+                  'flex h-full flex-col items-center justify-center gap-1 px-2 text-xs font-medium transition-colors md:px-4 md:text-sm',
                   active ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
                 )}
               >
                 <span
                   className={cn(
-                    'flex h-8 w-12 items-center justify-center rounded-full transition-colors',
+                    'flex size-8 items-center justify-center rounded-full transition-colors md:size-9',
                     active && 'bg-primary/10',
                   )}
                 >
                   <Icon className="size-6" aria-hidden="true" />
                 </span>
-                {label}
+                <span className="whitespace-nowrap">{label}</span>
               </Link>
             </li>
           )

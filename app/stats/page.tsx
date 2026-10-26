@@ -5,28 +5,20 @@ import {
   fetchSubjectCheckinCounts,
   fetchTotalEarnedStars,
 } from '@/lib/supabase-queries'
+import { shiftDate, todayStr } from '@/lib/dates'
 import { StatsView } from './stats-view'
 
 /** 统计页每次进入重新拉取数据 */
 export const dynamic = 'force-dynamic'
 
-/** 今天的日期 key（YYYY-MM-DD，本地时区） */
+/** 今天的日期 key（YYYY-MM-DD，北京时间，与服务器运行时时区无关） */
 function todayKey(): string {
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+  return todayStr()
 }
 
 /** 给定日期 key，返回前一天的 key */
 function prevDayKey(key: string): string {
-  const d = new Date(`${key}T00:00:00`)
-  d.setDate(d.getDate() - 1)
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
+  return shiftDate(key, -1)
 }
 
 /**
@@ -64,9 +56,9 @@ function timeAgo(iso: string): string {
 
 /** 当前月份日历：返回 { day, dateKey, count }[]，count 为当天打卡次数 */
 function buildCurrentMonthCalendar(checkinDates: string[]) {
-  const now = new Date()
-  const year = now.getFullYear()
-  const month = now.getMonth() // 0-based
+  const nowKey = todayStr()
+  const year = Number(nowKey.slice(0, 4))
+  const month = Number(nowKey.slice(5, 7)) - 1 // 0-based
   const daysInMonth = new Date(year, month + 1, 0).getDate()
   const firstDayWeekday = new Date(year, month, 1).getDay() // 0=周日
 

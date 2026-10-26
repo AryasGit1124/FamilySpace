@@ -1,5 +1,5 @@
 import { fetchMasteredChars, fetchPoems, fetchSubjectIdByName } from '@/lib/supabase-queries'
-import { todayDateKey } from '@/lib/supabase-adapter'
+import { todayStr } from '@/lib/dates'
 import { PoemClient } from './poem-client'
 
 export const dynamic = 'force-dynamic'
@@ -25,7 +25,7 @@ export default async function PoemPage() {
     <PoemClient
       poems={poems}
       knownChars={knownChars}
-      todayKey={todayDateKey()}
+      todayKey={todayStr()}
       backHref={subjectId ? `/subject/${subjectId}` : undefined}
     />
   )

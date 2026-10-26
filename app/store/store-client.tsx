@@ -72,7 +72,7 @@ export function StoreClient({ rewards, starTotal }: Props) {
           礼物正在准备中，请过几天再来看看吧
         </p>
       ) : (
-        <ul className="mt-3 grid grid-cols-2 gap-3 px-5 pb-6 md:grid-cols-3">
+        <ul className="mt-3 grid grid-cols-2 gap-3 px-5 pb-6 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {rewards.map((reward) => {
             const insufficient = starTotal < reward.cost_stars
             const busy = redeemingId === reward.id

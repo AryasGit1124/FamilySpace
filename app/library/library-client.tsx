@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { AlertCircle, CalendarDays, CheckCircle2, Image as ImageIcon, Play, Trash2, User, Video, X } from 'lucide-react'
+import { AlertCircle, CalendarDays, CheckCircle2, Play, Trash2, User, Video, X } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/components/auth-provider'
@@ -25,6 +25,25 @@ function formatUploadTime(iso: string) {
 function formatDateLabel(date: string) {
   const [, mm, dd] = date.split('-')
   return mm && dd ? `${Number(mm)}月${Number(dd)}日` : date
+}
+
+/** 带学状态徽章：learned=已带学（绿）/ need_review=需重看（橙）/ 未标记则不显示 */
+function TeachingBadge({ status }: { status: MediaRow['teaching_status'] }) {
+  if (status === 'learned') {
+    return (
+      <span className="absolute right-2 top-2 rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-medium text-white shadow-sm">
+        ✅ 已带学
+      </span>
+    )
+  }
+  if (status === 'need_review') {
+    return (
+      <span className="absolute right-2 top-2 rounded-full bg-orange-500 px-2 py-0.5 text-[11px] font-medium text-white shadow-sm">
+        🔄 需重看
+      </span>
+    )
+  }
+  return null
 }
 
 export default function LibraryPage() {
@@ -213,7 +232,7 @@ export default function LibraryPage() {
                     {rows.length}
                   </span>
                 </div>
-                <ul className="flex flex-col gap-2">
+                <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
                   {rows.map((item) => (
                     <li key={item.id}>
                       {/* 整张卡片可点击进详情页；删除按钮内部 stopPropagation 防冒泡 */}
@@ -227,29 +246,55 @@ export default function LibraryPage() {
                             router.push(`/media/${item.id}`)
                           }
                         }}
-                        className="cursor-pointer rounded-xl border bg-card p-3 shadow-sm transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+                        className="h-full cursor-pointer overflow-hidden rounded-xl border bg-card shadow-sm transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
                       >
-                        <div className="flex items-start gap-3">
-                          <span className="relative mt-0.5 flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted text-muted-foreground">
-                            {item.thumb_url ? (
-                              // 该图使用普通 img，next.config 已开启 images.unoptimized
-                              <img src={item.thumb_url} alt="" className="size-9 object-cover" />
-                            ) : item.file_type === 'video' ? (
-                              <Video className="size-4" aria-hidden="true" />
-                            ) : (
-                              <ImageIcon className="size-4" aria-hidden="true" />
-                            )}
-                            {item.file_type === 'video' && (
-                              /* 播放角标：提示视频可点击播放 */
-                              <span className="absolute -right-1 -bottom-1 flex size-4 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                                <Play className="size-2.5 fill-current" aria-hidden="true" />
+                        {/* 封面区：文字作业直接预览文本；图片直接展示内容；视频显示抽帧封面或深色占位 + 播放角标 */}
+                        <div className="relative h-40 w-full bg-muted">
+                          {item.file_type === 'text' ? (
+                            <div className="flex h-40 w-full flex-col items-start gap-2 overflow-hidden bg-amber-50 p-3">
+                              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                                📝 文字作业
                               </span>
-                            )}
-                          </span>
+                              <p className="line-clamp-3 w-full whitespace-pre-wrap text-sm leading-relaxed text-amber-950">
+                                {item.note?.trim() || '（无内容）'}
+                              </p>
+                            </div>
+                          ) : item.file_type === 'image' ? (
+                            // 该图使用普通 img，next.config 已开启 images.unoptimized
+                            <img
+                              src={item.file_url}
+                              alt={`${item.course_name?.trim() || '未分类'} ${item.media_date}`}
+                              loading="lazy"
+                              className="h-40 w-full object-cover"
+                            />
+                          ) : item.thumb_url ? (
+                            <img
+                              src={item.thumb_url}
+                              alt=""
+                              loading="lazy"
+                              className="h-40 w-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-40 w-full items-center justify-center bg-slate-800 text-white/60">
+                              <Video className="size-8" aria-hidden="true" />
+                            </div>
+                          )}
+
+                          {item.file_type === 'video' && (
+                            <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                              <span className="flex size-11 items-center justify-center rounded-full bg-black/55 text-white">
+                                <Play className="size-5 fill-current" aria-hidden="true" />
+                              </span>
+                            </span>
+                          )}
+
+                          <TeachingBadge status={item.teaching_status} />
+                        </div>
+
+                        <div className="flex items-start gap-3 p-3">
                           <div className="min-w-0 flex-1">
-                            <p className="truncate font-medium">{item.course_name?.trim() || '未分类'}</p>
-                            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                              <span className="inline-flex items-center gap-1">
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                              <span className="inline-flex items-center gap-1 font-medium text-foreground">
                                 <CalendarDays className="size-3.5" aria-hidden="true" />
                                 {formatDateLabel(item.media_date)}
                               </span>
@@ -259,7 +304,8 @@ export default function LibraryPage() {
                               </span>
                               <span>上传于 {formatUploadTime(item.created_at)}</span>
                             </div>
-                            {item.note && (
+                            {/* 文字作业的预览已在封面区展示，下方不再重复 */}
+                            {item.note && item.file_type !== 'text' && (
                               <p className="mt-2 line-clamp-3 text-sm break-words text-muted-foreground">
                                 {item.note}
                               </p>
@@ -269,7 +315,7 @@ export default function LibraryPage() {
                             <Button
                               variant="ghost"
                               size="icon"
-                              className="text-muted-foreground hover:text-destructive"
+                              className="shrink-0 text-muted-foreground hover:text-destructive"
                               onClick={(e) => {
                                 // 阻止冒泡：删除不触发卡片跳转
                                 e.stopPropagation()

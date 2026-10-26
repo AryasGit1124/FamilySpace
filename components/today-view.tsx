@@ -1,12 +1,14 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { useAuth } from '@/components/auth-provider'
 import { OfflineCourseCard } from '@/components/offline-course-card'
 import { PageHeader } from '@/components/page-header'
 import { TaskList } from '@/components/task-list'
 import { weekdays, type CheckInTask, type ScheduleEntry, type Subject, type Weekday } from '@/lib/mock-data'
+import { todayStr } from '@/lib/dates'
 import { fetchStarTotal } from '@/lib/supabase-queries'
 import { cn } from '@/lib/utils'
 
@@ -24,6 +26,35 @@ export function TodayView({ tasksByDay, coursesByDay, subjects, todayWeekday, we
   const { role } = useAuth()
   const isChild = role === 'child'
   const [starTotal, setStarTotal] = useState<number | null>(null)
+  const router = useRouter()
+
+  // 跨天自动刷新：iPad 上页面常驻（挂后台/合盖），回到前台时若本地日期已变，
+  // 强制 router.refresh() 重取服务端数据，同时把选中的周几重置为今天
+  useEffect(() => {
+    const check = () => {
+      if (document.visibilityState !== 'visible') return
+      if (todayStr() !== weekDates[todayWeekday]) {
+        setSelectedDay(todayWeekday)
+        router.refresh()
+      }
+    }
+    check()
+    document.addEventListener('visibilitychange', check)
+    window.addEventListener('pageshow', check)
+    window.addEventListener('focus', check)
+    const timer = window.setInterval(check, 60_000)
+    return () => {
+      document.removeEventListener('visibilitychange', check)
+      window.removeEventListener('pageshow', check)
+      window.removeEventListener('focus', check)
+      window.clearInterval(timer)
+    }
+  }, [router, todayWeekday, weekDates])
+
+  // 跨天刷新后服务端传入新的 todayWeekday，选中态同步回今天
+  useEffect(() => {
+    setSelectedDay(todayWeekday)
+  }, [todayWeekday])
 
   useEffect(() => {
     if (!isChild) return
@@ -61,7 +92,7 @@ export function TodayView({ tasksByDay, coursesByDay, subjects, todayWeekday, we
     : selectedWeekday?.label ?? ''
 
   return (
-    <>
+    <div className="mx-auto w-full max-w-3xl lg:max-w-5xl">
       <PageHeader
         title="今日学习"
         subtitle={dateLabel}
@@ -116,6 +147,6 @@ export function TodayView({ tasksByDay, coursesByDay, subjects, todayWeekday, we
         />
         <TaskList tasks={tasks} dateKey={dateKey} />
       </div>
-    </>
+    </div>
   )
 }

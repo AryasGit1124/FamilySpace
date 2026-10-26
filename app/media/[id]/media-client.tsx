@@ -113,6 +113,7 @@ export function MediaClient({ media }: { media: MediaRow }) {
   }
 
   const isVideo = media.file_type === 'video'
+  const isText = media.file_type === 'text'
   const statusMeta = status ? STATUS_OPTIONS.find((o) => o.value === status) : null
 
   return (
@@ -125,29 +126,40 @@ export function MediaClient({ media }: { media: MediaRow }) {
       />
 
       <div className="flex flex-col gap-4 px-5 pb-8">
-        {/* 播放器：w-full + 黑底，object-contain 适配 iPad 横竖屏 */}
-        <div className="w-full overflow-hidden rounded-xl bg-black">
-          {isVideo ? (
-            <video
-              ref={videoRef}
-              src={media.file_url}
-              poster={media.thumb_url ?? undefined}
-              controls
-              preload="metadata"
-              className="max-h-[70vh] w-full bg-black object-contain"
-              onLoadedMetadata={handleLoadedMetadata}
-              onTimeUpdate={handleTimeUpdate}
-              onError={() => setCodecIssue(true)}
-            />
-          ) : (
-            // 该图使用普通 img，next.config 已开启 images.unoptimized
-            <img
-              src={media.file_url}
-              alt={media.course_name ?? '资料图片'}
-              className="max-h-[70vh] w-full object-contain"
-            />
-          )}
-        </div>
+        {/* 内容区：文字作业大字居中展示；视频/图片渲染播放器或图片（iPad 竖屏 max-w-3xl，横屏 max-w-5xl） */}
+        {isText ? (
+          <div className="mx-auto w-full max-w-3xl rounded-2xl border bg-amber-50 p-6 text-center md:p-10">
+            <span className="inline-block rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-700">
+              📝 文字作业
+            </span>
+            <p className="mt-4 whitespace-pre-wrap text-xl leading-relaxed text-amber-950 md:text-2xl md:leading-relaxed">
+              {media.note?.trim() || '（无内容）'}
+            </p>
+          </div>
+        ) : (
+          <div className="mx-auto w-full max-w-3xl overflow-hidden rounded-xl bg-black lg:max-w-5xl">
+            {isVideo ? (
+              <video
+                ref={videoRef}
+                src={media.file_url}
+                poster={media.thumb_url ?? undefined}
+                controls
+                preload="metadata"
+                className="max-h-[70vh] w-full bg-black object-contain"
+                onLoadedMetadata={handleLoadedMetadata}
+                onTimeUpdate={handleTimeUpdate}
+                onError={() => setCodecIssue(true)}
+              />
+            ) : (
+              // 该图使用普通 img，next.config 已开启 images.unoptimized
+              <img
+                src={media.file_url}
+                alt={media.course_name ?? '资料图片'}
+                className="max-h-[70vh] w-full object-contain"
+              />
+            )}
+          </div>
+        )}
 
         {isVideo && (
           <div className="flex gap-2">

@@ -4,7 +4,7 @@ import { PageHeader } from '@/components/page-header'
 import { buttonVariants } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
-import { getWeekDates } from '@/lib/supabase-adapter'
+import { isoDayOfWeek, shiftDate, todayStr } from '@/lib/dates'
 import { requireSupabase } from '@/lib/supabase'
 import { resolveFamilyId } from '@/lib/family'
 import { scoped } from '@/lib/supabase-queries'
@@ -26,9 +26,10 @@ type MediaRow = {
 }
 
 export default async function MediaLibraryPage() {
-  const weekDates = getWeekDates()
-  const monday = weekDates[1]
-  const sunday = weekDates[7]
+  // 以北京时间为准，避免服务器 UTC 时区把「本周」算偏
+  const today = todayStr()
+  const monday = shiftDate(today, -(isoDayOfWeek(today) - 1))
+  const sunday = shiftDate(monday, 6)
 
   let rows: MediaRow[] = []
   let loadError: string | null = null

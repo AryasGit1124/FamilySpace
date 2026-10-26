@@ -1,13 +1,13 @@
 import { TodayView } from '@/components/today-view'
-import { getTodayWeekday, weekdays } from '@/lib/mock-data'
+import { weekdays } from '@/lib/mock-data'
 import { requireSupabase } from '@/lib/supabase'
 import { resolveFamilyId } from '@/lib/family'
 import { scoped } from '@/lib/supabase-queries'
+import { isoDayOfWeek, shiftDate, todayStr } from '@/lib/dates'
 import {
   adaptSchedules,
   adaptSubjectsFromTemplates,
   adaptWeeklyTemplatesToTasks,
-  getWeekDates,
 } from '@/lib/supabase-adapter'
 import type { ScheduleRow, WeeklyTemplateRow } from '@/lib/supabase-adapter'
 import type { CheckInTask, ScheduleEntry, Subject, Weekday } from '@/lib/mock-data'
@@ -20,8 +20,14 @@ import type { CheckInTask, ScheduleEntry, Subject, Weekday } from '@/lib/mock-da
 export const dynamic = 'force-dynamic'
 
 export default async function TodayPage() {
-  const todayWeekday = getTodayWeekday()
-  const weekDates = getWeekDates()
+  // 以北京时间为准：服务器可能跑在 UTC，直接 new Date() 会在北京时间 0~8 点把「今天」算成昨天
+  const today = todayStr()
+  const todayWeekday = isoDayOfWeek(today) // 1=周一 … 7=周日，与数据库 day_of_week 一致
+  const mondayStr = shiftDate(today, -(todayWeekday - 1))
+  const weekDates = {} as Record<Weekday, string>
+  for (let i = 0; i < 7; i += 1) {
+    weekDates[(i + 1) as Weekday] = shiftDate(mondayStr, i)
+  }
 
   // ----- 1~3. 并行查整周 templates / checkins / schedules（串行会 3 倍往返延迟） -----
   const [templateRows, checkinMapByDate, scheduleRows] = await Promise.all([

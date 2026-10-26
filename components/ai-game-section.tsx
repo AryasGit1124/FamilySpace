@@ -134,7 +134,7 @@ export function AiGameSection({ subjectId, subjectName, games }: Props) {
           还没有线上任务，点上面的按钮生成一个吧
         </p>
       ) : (
-        <ul className="flex flex-col gap-2">
+        <ul className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
           {games.map((game) => {
             // AI 生成游戏统一进万能渲染引擎 /games/dynamic/[id]（旧 /games/ai-play 内容也能解析）；子模块路由是整模块入口，直接跳
             const isPlayerRoute =
