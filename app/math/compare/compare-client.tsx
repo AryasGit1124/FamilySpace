@@ -1,10 +1,10 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
-import { speakChinese, stopSpeak } from '@/lib/tts'
+import { speakChinese, speakChineseAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 import { RoundComplete, RoundProgress, MathBackLink, MATH_ROUND_TOTAL } from '../game-ui'
 import { useMathRound } from '../use-math-round'
@@ -33,7 +33,6 @@ export function CompareGame({ taskId }: { taskId: string | null }) {
   const [locked, setLocked] = useState(false)
   const [wrongSymbol, setWrongSymbol] = useState<Symbol | null>(null)
   const [hasTried, setHasTried] = useState(false)
-  const timerRef = useRef<number | null>(null)
 
   const { solved, firstTryCorrect, finished, checked, checkingIn, error, earnedStars, isParent, addSolved, reset } =
     useMathRound(taskId)
@@ -50,31 +49,24 @@ export function CompareGame({ taskId }: { taskId: string | null }) {
     }
   }, [question])
 
-  useEffect(
-    () => () => {
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-      stopSpeak()
-    },
-    [],
-  )
+  useEffect(() => () => stopSpeak(), [])
 
   const nextQuestion = () => {
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-    timerRef.current = window.setTimeout(() => {
-      setQuestion(makeQuestion())
-      setLocked(false)
-      setWrongSymbol(null)
-      setHasTried(false)
-    }, 800)
+    setQuestion(makeQuestion())
+    setLocked(false)
+    setWrongSymbol(null)
+    setHasTried(false)
   }
 
-  const choose = (symbol: Symbol) => {
+  /** 答对：等「答对了」读完再出新题，期间按钮保持禁用 */
+  const choose = async (symbol: Symbol) => {
     if (!question || locked) return
     const answer: Symbol = question.a > question.b ? '>' : '<'
     if (symbol === answer) {
       setLocked(true)
-      speakChinese('答对了')
       addSolved(!hasTried)
+      stopSpeak()
+      await speakChineseAsync('答对了')
       nextQuestion()
     } else {
       setWrongSymbol(symbol)

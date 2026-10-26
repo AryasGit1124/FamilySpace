@@ -6,7 +6,7 @@ import { CheckCircle2, Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/components/auth-provider'
 import { handleGameCheckin } from '@/lib/rewards'
-import { speakChinese, stopSpeak } from '@/lib/tts'
+import { speakChinese, speakChineseAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 import { MathBackLink } from '@/app/math/game-ui'
 
@@ -182,8 +182,6 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
   const [earnedStars, setEarnedStars] = useState<number | null>(null)
   const [error, setError] = useState('')
 
-  const timerRef = useRef<number | null>(null)
-
   const stepKind: StepKind = STEP_LABELS[Math.min(stepIndex, STEP_LABELS.length - 1)]
   const doneCount = Math.min(stepIndex * QUESTIONS_PER_STEP + qIndex, TOTAL_QUESTIONS)
 
@@ -213,13 +211,7 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
   }, [question, stepIndex])
 
   // 卸载清理
-  useEffect(
-    () => () => {
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-      stopSpeak()
-    },
-    [],
-  )
+  useEffect(() => () => stopSpeak(), [])
 
   const advance = useCallback(() => {
     if (qIndex + 1 < QUESTIONS_PER_STEP) {
@@ -230,24 +222,22 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
     }
   }, [qIndex])
 
-  /** 统一点选逻辑：首答对计分；点错抖动可重选；点对短暂停顿后进入下一题/下一步 */
-  const pick = (key: string, isCorrect: boolean) => {
+  /** 统一点选逻辑：首答对计分；点错抖动可重选；点对等语音播完再进下一题 */
+  const pick = async (key: string, isCorrect: boolean) => {
     if (locked || wrongKeys.has(key)) return
     if (isCorrect) {
       if (wrongKeys.size === 0) setTotalFirstTryCorrect((n) => n + 1)
       setLocked(true)
       stopSpeak()
       if (question?.kind === '比大小') {
-        // 视觉填入：符号填进表达式，朗读完整句子（如「4 小于 13」），停留 2 秒再切题
+        // 视觉填入：符号填进表达式，朗读完整句子（如「4 小于 13」）
         setFilledSymbol(key)
-        speakChinese(
-          `${question.a} ${key === '<' ? '小于' : key === '>' ? '大于' : '等于'} ${question.b}`,
-        )
-        timerRef.current = window.setTimeout(advance, 2000)
+        const symbolWord = key === '<' ? '小于' : key === '>' ? '大于' : '等于'
+        await speakChineseAsync(`${question.a} ${symbolWord} ${question.b}`)
       } else {
-        speakChinese('答对了')
-        timerRef.current = window.setTimeout(advance, 800)
+        await speakChineseAsync('答对了')
       }
+      advance()
     } else {
       setWrongKeys((prev) => new Set(prev).add(key))
     }

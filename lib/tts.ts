@@ -463,6 +463,85 @@ export function speakChinese(text: string, onEnd?: () => void) {
   requestSpeak({ text, lang: 'zh', rate: 0.8, onEnd })
 }
 
+// ── Promise 版播报：await 到语音真正播完，供「音落才切题」的流程使用 ──
+
+let speechGen = 0
+const pendingSpeakResolvers = new Map<number, () => void>()
+
+/** 新语音开始时，让更早的 await 立即结束，避免旧流程卡在半路 */
+function resolveSupersededSpeaks(gen: number) {
+  for (const [key, resolve] of pendingSpeakResolvers) {
+    if (key < gen) {
+      pendingSpeakResolvers.delete(key)
+      resolve()
+    }
+  }
+}
+
+/** 停播/卸载时释放所有等待中的 await，避免永久挂起 */
+function resolveAllSpeakPromises() {
+  for (const resolve of pendingSpeakResolvers.values()) resolve()
+  pendingSpeakResolvers.clear()
+}
+
+/** 按字数粗估最长播放时长：语音异常无回调时兜底 resolve */
+function estimateSpeakMs(text: string) {
+  return Math.min(12000, Math.max(2500, text.length * 350 + 2000))
+}
+
+/** 异步播报：resolve 时机 = 音频自然播完 / 被新语音取代 / 兜底超时 */
+function speakAsync(request: SpeakRequest): Promise<void> {
+  if (!hasWindow() || !request.text.trim()) return Promise.resolve()
+  const gen = ++speechGen
+  resolveSupersededSpeaks(gen)
+  return new Promise<void>((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      pendingSpeakResolvers.delete(gen)
+      if (hasWindow()) window.clearTimeout(timer)
+      resolve()
+    }
+    const timer = window.setTimeout(finish, estimateSpeakMs(request.text))
+    pendingSpeakResolvers.set(gen, finish)
+    requestSpeak({ ...request, onEnd: finish })
+  })
+}
+
+/** 朗读中文并等待播完 */
+export function speakChineseAsync(text: string, rate = 0.8): Promise<void> {
+  return speakAsync({ text, lang: 'zh', rate })
+}
+
+/** 朗读英文并等待播完 */
+export function speakEnglishAsync(text: string, rate = 0.85): Promise<void> {
+  return speakAsync({ text, lang: 'en', rate })
+}
+
+/** 逐句朗读并等待全部播完 */
+export function speakLinesAsync(lines: string[]): Promise<void> {
+  if (!hasWindow()) return Promise.resolve()
+  const cleaned = lines.filter((line) => line.trim())
+  if (cleaned.length === 0) return Promise.resolve()
+  const gen = ++speechGen
+  resolveSupersededSpeaks(gen)
+  return new Promise<void>((resolve) => {
+    let done = false
+    const total = cleaned.join('')
+    const finish = () => {
+      if (done) return
+      done = true
+      pendingSpeakResolvers.delete(gen)
+      if (hasWindow()) window.clearTimeout(timer)
+      resolve()
+    }
+    const timer = window.setTimeout(finish, estimateSpeakMs(total))
+    pendingSpeakResolvers.set(gen, finish)
+    speakLines(cleaned, finish)
+  })
+}
+
 /** 朗读英文，使用腾讯云的英文音色；onEnd 在自然播完时触发 */
 export function speakEnglish(text: string, rate = 0.85, onEnd?: () => void) {
   requestSpeak({ text, lang: 'en', rate, onEnd })
@@ -493,6 +572,7 @@ export function speakLines(lines: string[], onEnd?: () => void) {
 /** 立即停止当前及排队中的语音播报 */
 export function stopSpeak() {
   playToken += 1
+  resolveAllSpeakPromises()
   waitingRequest = null
   waitingLines = null
   pendingRequest = null

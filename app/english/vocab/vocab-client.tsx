@@ -1,11 +1,11 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
 import { VOCAB, type VocabWord } from '@/lib/english-data'
-import { speakEnglish, stopSpeak } from '@/lib/tts'
+import { speakEnglish, speakEnglishAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 import { RoundComplete, RoundProgress, ENGLISH_ROUND_TOTAL } from '../game-ui'
 import { useEnglishRound } from '../use-english-round'
@@ -41,7 +41,6 @@ export function VocabGame({
   const [locked, setLocked] = useState(false)
   const [wrongOption, setWrongOption] = useState<string | null>(null)
   const [hasTried, setHasTried] = useState(false)
-  const timerRef = useRef<number | null>(null)
 
   const { solved, firstTryCorrect, finished, checked, checkingIn, error, earnedStars, isParent, addSolved, reset } =
     useEnglishRound(taskId)
@@ -58,31 +57,23 @@ export function VocabGame({
     }
   }, [question])
 
-  useEffect(
-    () => () => {
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-      stopSpeak()
-    },
-    [],
-  )
+  useEffect(() => () => stopSpeak(), [])
 
   const nextQuestion = () => {
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-    timerRef.current = window.setTimeout(() => {
-      setQuestion(makeQuestion())
-      setLocked(false)
-      setWrongOption(null)
-      setHasTried(false)
-      timerRef.current = null
-    }, 800)
+    setQuestion(makeQuestion())
+    setLocked(false)
+    setWrongOption(null)
+    setHasTried(false)
   }
 
-  const choose = (option: VocabWord) => {
+  /** 答对：等「Yes! 单词」读完再出新题，期间按钮保持禁用 */
+  const choose = async (option: VocabWord) => {
     if (!question || locked) return
     if (option.en === question.word.en) {
       setLocked(true)
-      speakEnglish(`Yes! ${option.en}`)
       addSolved(!hasTried)
+      stopSpeak()
+      await speakEnglishAsync(`Yes! ${option.en}`)
       nextQuestion()
     } else {
       setWrongOption(option.emoji)

@@ -19,7 +19,7 @@ import {
 import { handleGameCheckin } from '@/lib/rewards'
 import { resolveWordCard, type WordCard } from '@/lib/literacy-words'
 import { todayDateKey } from '@/lib/supabase-adapter'
-import { speakChar, speakChinese, speakLines, stopSpeak } from '@/lib/tts'
+import { speakChar, speakChinese, speakLines, speakLinesAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 
 const LEVELS = [1, 2, 3, 4, 5, 6]
@@ -147,8 +147,10 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   const [findWrongIds, setFindWrongIds] = useState<Set<string>>(new Set())
   /** 找一找：是否已找出目标字（答对才解锁「下一个字」） */
   const [findSolved, setFindSolved] = useState(false)
-  /** 答对后延迟切下一个字的定时器 */
-  const quizTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** 找一找：答对后防止连点的标记（state 更新有延迟，用 ref 立即生效） */
+  const findSolvedRef = useRef(false)
+  /** 听音选字：答对后防止连点的标记 */
+  const answeredRef = useRef(false)
 
   // ── Step 3：听音识字 ──
   const [questions, setQuestions] = useState<QuizQuestion[]>([])
@@ -326,6 +328,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     setFindOptions(shuffle([currentCard, ...shuffle(pool).slice(0, 3)]))
     setFindWrongIds(new Set())
     setFindSolved(false)
+    findSolvedRef.current = false
     // 只在字变化时重出题，chars 变化（切级别）已由 load 清空 Step 2 状态
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, currentWordIndex])
@@ -338,25 +341,12 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     setFlipped((f) => !f)
   }
 
-  /** 清掉答对后的延迟定时器（防止离开页面后还自动切字） */
-  const clearQuizTimer = () => {
-    if (quizTimerRef.current) {
-      clearTimeout(quizTimerRef.current)
-      quizTimerRef.current = null
-    }
-  }
-
-  useEffect(() => {
-    if (step !== 2) clearQuizTimer()
-  }, [step])
-
-  useEffect(() => () => clearQuizTimer(), [])
-
   /** 学字卡 → 找一找：同步在点击手势内播报提问，规避 iPad 自动播放拦截 */
   const goToQuiz = () => {
     if (!currentCard) return
     setSubStep('quiz')
     setFindWrongIds(new Set())
+    findSolvedRef.current = false
     askFind(currentCard)
   }
 
@@ -367,9 +357,8 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     speakCard(currentCard)
   }
 
-  /** 答对 1.5 秒后：还有下一个字就回到学字卡，否则进入通关状态 */
+  /** 答对并播完语音后：还有下一个字就回到学字卡，否则进入通关状态 */
   const finishQuizRound = () => {
-    clearQuizTimer()
     if (currentWordIndex >= todayLearnChars.length - 1) {
       setLearnDone(true)
       return
@@ -382,19 +371,17 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     if (next) speakCard(next)
   }
 
-  /** 找一找：点对闪绿并朗读「答对啦 + 字词」，点错抖动并提示「再试一次哦」 */
-  const pickFind = (opt: LiteracyChar) => {
-    if (!currentCard || findSolved) return
+  /** 找一找：点对闪绿并朗读「答对啦 + 字词」，语音播完后才切下一个字 */
+  const pickFind = async (opt: LiteracyChar) => {
+    if (!currentCard || findSolvedRef.current) return
     if (opt.id === currentCard.id) {
+      findSolvedRef.current = true
       setFindSolved(true)
       const word = wordCard?.word
+      const cardText = word ? `${currentCard.char}，${word}的${currentCard.char}` : currentCard.char
       stopSpeak()
-      speakLines([
-        '答对啦',
-        word ? `${currentCard.char}，${word}的${currentCard.char}` : currentCard.char,
-      ])
-      clearQuizTimer()
-      quizTimerRef.current = setTimeout(finishQuizRound, 1500)
+      await speakLinesAsync(['答对啦', cardText])
+      finishQuizRound()
     } else {
       setFindWrongIds((prev) => new Set(prev).add(opt.id))
       stopSpeak()
@@ -437,22 +424,23 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   // 题目变化时自动播放读音（先打断旧语音）
   useEffect(() => {
     if (step !== 3 || !currentQ) return
+    answeredRef.current = false
     speakCard(currentQ.target)
   }, [step, qIndex, currentQ])
 
-  /** 点选项：首答对才计分；点错抖动可继续点；点对自动切下一题 */
-  const answer = (opt: LiteracyChar) => {
-    if (!currentQ || answered || wrongIds.has(opt.id)) return
+  /** 点选项：首答对才计分；点错抖动可继续点；点对等语音播完再切下一题 */
+  const answer = async (opt: LiteracyChar) => {
+    if (!currentQ || answeredRef.current || wrongIds.has(opt.id)) return
     if (opt.id === currentQ.target.id) {
       if (wrongIds.size === 0) setFirstTryCorrect((n) => n + 1)
+      answeredRef.current = true
       setAnswered(true)
-      speakCard(currentQ.target)
+      stopSpeak()
+      await speakLinesAsync(['答对啦', cardSpeakText(currentQ.target)])
       if (qIndex + 1 < questions.length) {
-        setTimeout(() => {
-          setQIndex((i) => i + 1)
-          setWrongIds(new Set())
-          setAnswered(false)
-        }, 800)
+        setQIndex((i) => i + 1)
+        setWrongIds(new Set())
+        setAnswered(false)
       }
     } else {
       setWrongIds((prev) => new Set(prev).add(opt.id))
@@ -627,7 +615,8 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     setFlipped(false)
     setFindSolved(false)
     setFindWrongIds(new Set())
-    clearQuizTimer()
+    findSolvedRef.current = false
+    answeredRef.current = false
     setQuestions([])
     setQIndex(0)
     setWrongIds(new Set())

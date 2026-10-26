@@ -14,7 +14,7 @@ import {
   type LiteracyChar,
   type MasteryStatus,
 } from '@/lib/supabase-queries'
-import { speakChinese } from '@/lib/tts'
+import { speakChinese, speakChineseAsync } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 
 const levels = [1, 2, 3, 4, 5, 6]
@@ -65,7 +65,7 @@ export default function LiteracyTestPage() {
       await upsertMastery(current.id, status)
       setMastery((prev) => ({ ...prev, [current.id]: status }))
       setMasteredCount(await countMasteredChars())
-      speakChinese(current.char)
+      await speakChineseAsync(current.char)
       setIndex((i) => i + 1)
     } catch (err) {
       console.error('[LiteracyTest] 写入 child_mastery 失败:', err)

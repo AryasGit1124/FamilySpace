@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Progress } from '@/components/ui/progress'
 import { isCorrectOption, type FillItem, type OnComplete } from '@/lib/dynamic-game'
-import { speakByContent } from '@/lib/game-speech'
+import { speakByContent, speakByContentAsync } from '@/lib/game-speech'
 import { stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 
@@ -29,7 +29,6 @@ export function FillGame({ data, onComplete }: Props) {
   const [attempted, setAttempted] = useState(false)
   const [firstTryCorrect, setFirstTryCorrect] = useState(0)
   const firstTryRef = useRef(0)
-  const timerRef = useRef<number | null>(null)
 
   const item = data[index]
   const isLast = index === data.length - 1
@@ -42,15 +41,10 @@ export function FillGame({ data, onComplete }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index])
 
-  // 卸载时清掉延时任务并停止语音
-  useEffect(() => {
-    return () => {
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-      stopSpeak()
-    }
-  }, [])
+  // 卸载时停止语音
+  useEffect(() => () => stopSpeak(), [])
 
-  const pick = (i: number) => {
+  const pick = async (i: number) => {
     if (solved) return
     const correct = isCorrectOption(item.options[i], i, item.answer)
     if (correct) {
@@ -58,20 +52,17 @@ export function FillGame({ data, onComplete }: Props) {
         firstTryRef.current += 1
         setFirstTryCorrect(firstTryRef.current)
       }
-      speakByContent('答对啦')
       setPicked(i)
-      // 正确后稍作停留再自动进入下一题
-      timerRef.current = window.setTimeout(() => {
-        timerRef.current = null
-        stopSpeak()
-        if (isLast) {
-          onComplete(data.length, firstTryRef.current)
-        } else {
-          setPicked(null)
-          setAttempted(false)
-          setIndex((v) => v + 1)
-        }
-      }, 1200)
+      // 语音播完再自动进入下一题，播报期间选项保持禁用
+      await speakByContentAsync('答对啦')
+      stopSpeak()
+      if (isLast) {
+        onComplete(data.length, firstTryRef.current)
+      } else {
+        setPicked(null)
+        setAttempted(false)
+        setIndex((v) => v + 1)
+      }
     } else {
       setAttempted(true)
       setPicked(i)
@@ -113,6 +104,7 @@ export function FillGame({ data, onComplete }: Props) {
               key={`option-${i}`}
               type="button"
               onClick={() => pick(i)}
+              disabled={solved}
               className={cn(
                 'w-full rounded-2xl border-2 p-4 text-center text-xl font-semibold transition-colors',
                 showCorrect && 'border-emerald-500 bg-emerald-50 text-emerald-800',

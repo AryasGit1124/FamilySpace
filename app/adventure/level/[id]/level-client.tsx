@@ -9,14 +9,12 @@ import { useAuth } from '@/components/auth-provider'
 import { MEMORY_EMOJIS } from '@/lib/memory-emojis'
 import { insertAdventureProgress } from '@/lib/supabase-queries'
 import { handleGameCheckin } from '@/lib/rewards'
-import { speakChar, speakChinese } from '@/lib/tts'
+import { speakChar, speakChinese, speakChineseAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 
 /** 普通关 3 颗心（3 题），Boss 关 5 颗心（5 题） */
 const NORMAL_HP = 3
 const BOSS_HP = 5
-/** 答对后到下一题的间隔，让「攻击成功！」播报完 */
-const NEXT_QUESTION_DELAY = 900
 /** 与地图页共用同一个 localStorage 键 */
 const STORAGE_KEY = 'adventure-max-unlocked-level'
 
@@ -183,7 +181,8 @@ export function LevelChallenge({
   /** 首答正确数（本题没点错过就答对） */
   const [firstTryCorrect, setFirstTryCorrect] = useState(0)
   const [earnedStars, setEarnedStars] = useState(0)
-  const advanceTimer = useRef<number | null>(null)
+  /** 答对后等待语音播报期间禁用选项，防止连点打乱节奏 */
+  const [busy, setBusy] = useState(false)
   const recordedRef = useRef(false)
 
   const valid = level >= 1 && level <= maxLevel
@@ -209,9 +208,6 @@ export function LevelChallenge({
             : genLogic()
       }),
     )
-    return () => {
-      if (advanceTimer.current !== null) window.clearTimeout(advanceTimer.current)
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [level, valid])
 
@@ -226,6 +222,8 @@ export function LevelChallenge({
       speakChinese(question.prompt)
     }
   }, [question, phase])
+
+  useEffect(() => () => stopSpeak(), [])
 
   if (!valid) {
     return (
@@ -260,34 +258,35 @@ export function LevelChallenge({
     )
   }
 
-  const choose = (option: string) => {
-    if (!question || phase !== 'fight') return
+  /** 答对：等「攻击成功」播报完再进入下一题，期间选项保持禁用 */
+  const choose = async (option: string) => {
+    if (!question || phase !== 'fight' || busy) return
     if (wrongPicks.includes(option)) return
 
     if (option === question.answer) {
       if (wrongPicks.length === 0) setFirstTryCorrect((c) => c + 1)
       const nextHp = hp - 1
       setHp(nextHp)
+      setBusy(true)
       // 答对：怪兽受击退
       setMonsterAnim('hit')
       setAnimKey((k) => k + 1)
-      speakChinese(
-        nextHp === 0 ? `攻击成功！${boss ? 'Boss' : '怪兽'}被打败啦！` : '攻击成功！',
-      )
+      stopSpeak()
       if (nextHp === 0) {
+        await speakChineseAsync(`攻击成功！${boss ? 'Boss' : '怪兽'}被打败啦！`)
         setPhase('chest')
       } else {
-        advanceTimer.current = window.setTimeout(() => {
-          advanceTimer.current = null
-          setWrongPicks([])
-          setQIndex((i) => i + 1)
-        }, NEXT_QUESTION_DELAY)
+        await speakChineseAsync('攻击成功！')
+        setWrongPicks([])
+        setQIndex((i) => i + 1)
+        setBusy(false)
       }
     } else {
       setWrongPicks((prev) => [...prev, option])
       // 答错：怪兽抖动
       setMonsterAnim('shake')
       setAnimKey((k) => k + 1)
+      stopSpeak()
       speakChinese('再试一次')
     }
   }
@@ -440,7 +439,7 @@ export function LevelChallenge({
                   <button
                     key={option}
                     type="button"
-                    disabled={wrong}
+                    disabled={wrong || busy}
                     onClick={() => choose(option)}
                     className={cn(
                       'flex items-center justify-center rounded-2xl border bg-background p-6 font-semibold transition-colors hover:bg-muted active:scale-95 lg:py-8',

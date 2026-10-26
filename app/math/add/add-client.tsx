@@ -1,11 +1,11 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
 import { updateTaskGameConfig } from '@/lib/supabase-queries'
-import { speakChinese, stopSpeak } from '@/lib/tts'
+import { speakChinese, speakChineseAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 import { MathBackLink, RoundComplete, RoundProgress, MATH_ROUND_TOTAL } from '../game-ui'
 import { useMathRound } from '../use-math-round'
@@ -84,7 +84,6 @@ export function AddSubtractGame({
   const [locked, setLocked] = useState(false)
   const [wrongOption, setWrongOption] = useState<number | null>(null)
   const [hasTried, setHasTried] = useState(false)
-  const timerRef = useRef<number | null>(null)
 
   const { solved, firstTryCorrect, finished, checked, checkingIn, error, earnedStars, isParent, addSolved, reset } =
     useMathRound(taskId)
@@ -101,39 +100,20 @@ export function AddSubtractGame({
     }
   }, [question])
 
-  useEffect(
-    () => () => {
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
+  useEffect(() => () => stopSpeak(), [])
+
+  /** 答对：等「答对了」读完再出新题，期间按钮保持禁用 */
+  const choose = async (value: number) => {
+    if (!question || locked) return
+    if (value === question.answer) {
+      setLocked(true)
+      addSolved(!hasTried)
       stopSpeak()
-    },
-    [],
-  )
-
-  const clearTimer = () => {
-    if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current)
-      timerRef.current = null
-    }
-  }
-
-  const nextQuestion = () => {
-    clearTimer()
-    timerRef.current = window.setTimeout(() => {
+      await speakChineseAsync('答对了')
       setQuestion(makeQuestion(maxNumber))
       setLocked(false)
       setWrongOption(null)
       setHasTried(false)
-      timerRef.current = null
-    }, 800)
-  }
-
-  const choose = (value: number) => {
-    if (!question || locked) return
-    if (value === question.answer) {
-      setLocked(true)
-      speakChinese('答对了')
-      addSolved(!hasTried)
-      nextQuestion()
     } else {
       setWrongOption(value)
       setHasTried(true)
@@ -143,7 +123,6 @@ export function AddSubtractGame({
   /** 切换难度：重新开始进度并持久化到 tasks.game_config */
   const changeDifficulty = (next: number) => {
     if (next === maxNumber) return
-    clearTimer()
     setMaxNumber(next)
     reset()
     setQuestion(makeQuestion(next))
@@ -159,7 +138,6 @@ export function AddSubtractGame({
   }
 
   const restart = () => {
-    clearTimer()
     reset()
     setQuestion(makeQuestion(maxNumber))
     setLocked(false)

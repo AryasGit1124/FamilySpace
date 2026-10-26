@@ -1,11 +1,11 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
 import { ALPHABET, type AlphabetLetter } from '@/lib/english-data'
-import { speakEnglish, stopSpeak } from '@/lib/tts'
+import { speakEnglish, speakEnglishAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 import { AlphabetBackLink, RoundComplete, RoundProgress, ENGLISH_ROUND_TOTAL } from '../../game-ui'
 import { useEnglishRound } from '../../use-english-round'
@@ -43,7 +43,6 @@ export function HideGame({ taskId }: { taskId: string | null }) {
   const [locked, setLocked] = useState(false)
   const [wrongOption, setWrongOption] = useState<string | null>(null)
   const [hasTried, setHasTried] = useState(false)
-  const timerRef = useRef<number | null>(null)
 
   const { solved, firstTryCorrect, finished, checked, checkingIn, error, earnedStars, isParent, addSolved, reset } =
     useEnglishRound(taskId)
@@ -60,31 +59,23 @@ export function HideGame({ taskId }: { taskId: string | null }) {
     }
   }, [question])
 
-  useEffect(
-    () => () => {
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-      stopSpeak()
-    },
-    [],
-  )
+  useEffect(() => () => stopSpeak(), [])
 
   const nextQuestion = () => {
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-    timerRef.current = window.setTimeout(() => {
-      setQuestion(makeQuestion())
-      setLocked(false)
-      setWrongOption(null)
-      setHasTried(false)
-      timerRef.current = null
-    }, 800)
+    setQuestion(makeQuestion())
+    setLocked(false)
+    setWrongOption(null)
+    setHasTried(false)
   }
 
-  const choose = (option: string) => {
+  /** 答对：等「Yes! Well done.」读完再出新题，期间按钮保持禁用 */
+  const choose = async (option: string) => {
     if (!question || locked) return
     if (option === question.target.lower) {
       setLocked(true)
-      speakEnglish('Yes! Well done.')
       addSolved(!hasTried)
+      stopSpeak()
+      await speakEnglishAsync('Yes! Well done.')
       nextQuestion()
     } else {
       setWrongOption(option)
