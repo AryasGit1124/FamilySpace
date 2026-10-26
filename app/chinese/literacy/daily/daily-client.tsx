@@ -115,9 +115,9 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   // ──────────────── Step 1 逻辑 ────────────────
 
   const openTest = (c: LiteracyChar) => {
-    setActive(c)
+    // 摸底测试不允许自动发音：孩子要先自己认字，想不起来时再手动点「播放读音」
     stopSpeak()
-    speakChar(c.char, c.pinyin)
+    setActive(c)
   }
 
   const mark = async (status: MasteryStatus) => {
@@ -681,8 +681,20 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
               )}
               <span className="mt-4 flex items-center gap-1 text-sm text-muted-foreground md:text-lg">
                 <Volume2 className="size-4 md:size-6" aria-hidden="true" />
-                点击重听
+                点击卡片可听读音
               </span>
+            </button>
+            {/* 独立的手动发音入口：家长想不起来时可以点一下辅助，绝不自动播放 */}
+            <button
+              type="button"
+              onClick={() => {
+                stopSpeak()
+                speakChar(active.char, active.pinyin)
+              }}
+              className="mt-5 flex items-center gap-2 rounded-full border-2 border-primary/30 bg-primary/5 px-6 py-3 text-lg font-medium text-primary transition-colors hover:bg-primary/10 active:scale-95 md:px-8 md:py-4 md:text-2xl"
+            >
+              <Volume2 className="size-5 md:size-7" aria-hidden="true" />
+              播放读音
             </button>
             <div className="w-full max-w-md flex gap-4 md:gap-8 mt-8">
               <Button

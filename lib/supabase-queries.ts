@@ -1161,8 +1161,19 @@ export async function upsertProfile(params: {
     .from('profiles')
     .upsert(params, { onConflict: 'id' })
     .select('id, family_id, role, display_name')
-    .single()
-  if (error) throw error
+    .maybeSingle()
+
+  // 写入成功但回读被 RLS 拦掉（0 行）时不能用 .single()，否则会误判为失败并中断登录流程
+  const noRow = (error as { code?: string } | null)?.code === 'PGRST116'
+  if (error && !noRow) throw error
+  if (!data) {
+    return {
+      id: params.id,
+      family_id: params.family_id,
+      role: params.role,
+      display_name: params.display_name ?? null,
+    } as ProfileRow
+  }
   return data as ProfileRow
 }
 
@@ -1242,12 +1253,28 @@ export async function fetchFamilyByInviteCode(code: string): Promise<{ id: strin
   return row ? { id: row.id, name: row.name } : null
 }
 
+/** 生成 uuid：非 https 环境（如局域网 http://192.168.x.x:3000）下 crypto.randomUUID 不可用 */
+function safeUuid(): string {
+  const cryptoObj = globalThis.crypto as Crypto | undefined
+  if (cryptoObj && typeof cryptoObj.randomUUID === 'function') return cryptoObj.randomUUID()
+  const bytes = new Uint8Array(16)
+  if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
+    cryptoObj.getRandomValues(bytes)
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256)
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 /** 新建家庭，返回 family_id */
 export async function insertFamily(params: { name: string; invite_code: string }): Promise<{ id: string }> {
   const supabase = await requireSupabase()
   // id 由客户端生成：插入后再 .select() 取 id 会走 families 的读策略，
   // 而建家庭的那一刻用户还没有 profile，读不到刚插入的行会被 RLS 拦截
-  const id = crypto.randomUUID()
+  const id = safeUuid()
   const { error } = await supabase.from('families').insert({ id, ...params })
   if (error) throw error
   return { id }

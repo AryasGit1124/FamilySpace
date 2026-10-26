@@ -185,3 +185,40 @@
 .math-shake {
   animation: math-shake 0.4s ease-in-out;
 }
+
+/* 冒险岛：怪兽被击中时的击退动画（答对触发） */
+@keyframes monster-hit {
+  0% {
+    transform: translateX(0) rotate(0deg);
+  }
+  25% {
+    transform: translateX(-18px) rotate(-8deg) scale(0.94);
+  }
+  55% {
+    transform: translateX(12px) rotate(4deg);
+  }
+  100% {
+    transform: translateX(0) rotate(0deg);
+  }
+}
+
+.monster-hit {
+  animation: monster-hit 0.45s ease-in-out;
+}
+
+/* 冒险岛：当前关卡的呼吸灯放大效果 */
+@keyframes breathe-glow {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 6px rgba(251, 191, 36, 0.6));
+  }
+  50% {
+    transform: scale(1.08);
+    filter: drop-shadow(0 0 18px rgba(251, 191, 36, 0.9));
+  }
+}
+
+.breathe-glow {
+  animation: breathe-glow 1.6s ease-in-out infinite;
+}

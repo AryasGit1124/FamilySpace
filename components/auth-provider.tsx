@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { User } from '@supabase/supabase-js'
-import { setActiveFamilyId } from '@/lib/family'
+import { resolveFamilyId, setActiveFamilyId } from '@/lib/family'
 import { supabase } from '@/lib/supabase'
 import { fetchProfile, type ProfileRow, type UserRole } from '@/lib/supabase-queries'
 
@@ -51,18 +51,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return
     }
 
-    const row = await fetchProfile(nextUser.id)
+    // 偶发网络抖动 / RLS 预热会让第一次读取落空，重试一次再去兜底，
+    // 否则会把已登录用户误判成「没有家庭」并弹回登录页
+    let row = await fetchProfile(nextUser.id)
+    if (!row) {
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      row = await fetchProfile(nextUser.id)
+    }
     if (row) {
       setProfile(row)
       setActiveFamilyId(row.family_id)
       return
     }
 
+    // profiles 读不到时的兜底：沿用本地记录的家庭 id，避免全局路由守卫把用户弹回登录页
+    const cachedFamilyId = await resolveFamilyId()
     const metaRole: UserRole = nextUser.user_metadata?.role === 'child' ? 'child' : 'parent'
-    setActiveFamilyId(null)
+    setActiveFamilyId(cachedFamilyId)
     setProfile({
       id: nextUser.id,
-      family_id: null,
+      family_id: cachedFamilyId,
       role: metaRole,
       display_name:
         typeof nextUser.user_metadata?.display_name === 'string'
@@ -133,7 +141,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (row) {
       setProfile(row)
       setActiveFamilyId(row.family_id)
+      return
     }
+
+    // 刚写完 profiles 但回读被拦（RLS / 缓存）时，用本地已写入的家庭 id 兜底，
+    // 否则守卫会把刚加入家庭的用户又送回登录页
+    const cachedFamilyId = await resolveFamilyId()
+    if (cachedFamilyId) setProfile((prev) => (prev ? { ...prev, family_id: cachedFamilyId } : prev))
   }, [])
 
   const signOut = useCallback(async () => {

@@ -10,14 +10,20 @@ import { cn } from '@/lib/utils'
 const STORAGE_KEY = 'adventure-max-unlocked-level'
 
 /**
- * 蛇形排版：按节点索引 index % 4 计算水平偏移，
- * 靠左 → 中间偏左 → 中间偏右 → 靠右，形成蜿蜒小路。
+ * 蛇形排版：手机端按 index % 4 计算水平偏移（靠左 → 中偏左 → 中偏右 → 靠右）；
+ * iPad 端（md+）切换为两列交错 S 形路径，由 MD_ZIGZAG 的左右站位覆盖。
  */
 const SNAKE_LAYOUT = [
   'self-start ml-8',
   'self-center -translate-x-14',
   'self-center translate-x-14',
   'self-end mr-8',
+] as const
+
+/** iPad 两列交错：偶数节点站左列，奇数节点站右列并上移，形成 S 形 */
+const MD_ZIGZAG = [
+  'md:self-auto md:m-0 md:translate-x-0 md:justify-self-start md:pl-16 lg:pl-24',
+  'md:self-auto md:ml-0 md:mr-0 md:translate-x-0 md:justify-self-end md:-mt-16 md:pr-16 lg:pr-24',
 ] as const
 
 function loadMaxUnlocked(maxLevel: number): number {
@@ -81,34 +87,49 @@ export function AdventureMap({
         backHref={backHref}
         backLabel="返回冒险岛学科"
       />
-      {/* 天空 → 森林的渐变背景长卷轴 */}
-      <div className="px-5 pb-6">
-        <div className="relative mx-auto w-full max-w-md overflow-hidden rounded-3xl border bg-gradient-to-b from-sky-200 via-emerald-50 to-emerald-100 shadow-sm">
-          {/* 居中的虚线小径 */}
+      {/* 手机端白底；iPad 端整页天空→草地渐变，更有游戏氛围 */}
+      <div className="px-5 pb-6 md:min-h-screen md:bg-gradient-to-b md:from-sky-200 md:via-green-100 md:to-green-300 md:py-6">
+        <div className="relative mx-auto w-full max-w-md overflow-hidden rounded-3xl border bg-gradient-to-b from-sky-200 via-emerald-50 to-emerald-100 shadow-sm md:max-w-3xl md:shadow-md lg:max-w-4xl">
+          {/* 手机端：居中的虚线小径；iPad 端改为左右两条虚线，对应两列站位 */}
           <div
-            className="absolute inset-y-6 left-1/2 border-l-4 border-dashed border-amber-700/40"
+            className="absolute inset-y-6 left-1/2 border-l-4 border-dashed border-amber-700/40 md:hidden"
             aria-hidden="true"
           />
-          <span className="absolute left-6 top-4 text-2xl" aria-hidden="true">☁️</span>
-          <span className="absolute right-8 top-16 text-2xl" aria-hidden="true">🌴</span>
-          <span className="absolute bottom-10 left-8 text-2xl" aria-hidden="true">🏁</span>
+          <div
+            className="absolute inset-y-6 left-1/4 hidden border-l-4 border-dashed border-amber-700/40 md:block"
+            aria-hidden="true"
+          />
+          <div
+            className="absolute inset-y-6 right-1/4 hidden border-l-4 border-dashed border-amber-700/40 md:block"
+            aria-hidden="true"
+          />
+          <span className="absolute left-6 top-4 text-2xl md:text-4xl" aria-hidden="true">☁️</span>
+          <span className="absolute right-8 top-16 text-2xl md:text-4xl" aria-hidden="true">🌴</span>
+          <span className="absolute bottom-10 left-8 text-2xl md:text-4xl" aria-hidden="true">🏁</span>
 
-          {/* 蛇形排列的关卡节点（动态渲染） */}
-          <ul className="relative z-10 flex flex-col gap-7 px-4 py-8" role="list" aria-label="关卡列表">
+          {/* 关卡节点：手机单列蛇形；iPad 两列交错 */}
+          <ul
+            className="relative z-10 flex flex-col gap-7 px-4 py-8 md:grid md:grid-cols-2 md:gap-x-40 md:gap-y-14 md:px-10 md:py-12 lg:gap-x-56"
+            role="list"
+            aria-label="关卡列表"
+          >
             {levels.map((level, index) => {
               const state = nodeStateOf(level.level_number, maxUnlocked)
               const isBoss = level.is_boss
-              const layout = SNAKE_LAYOUT[index % SNAKE_LAYOUT.length]
+              const layout = cn(SNAKE_LAYOUT[index % SNAKE_LAYOUT.length], MD_ZIGZAG[index % 2])
 
               const node = (
                 <span
                   className={cn(
                     'relative flex items-center justify-center rounded-full border-4 font-bold shadow-md transition-transform',
-                    isBoss ? 'size-24 text-3xl' : 'size-20 text-xl',
+                    isBoss
+                      ? 'size-24 text-3xl md:size-32 md:text-5xl'
+                      : 'size-20 text-xl md:size-28 md:text-3xl lg:size-32 lg:text-4xl',
+                    state === 'current' && 'breathe-glow',
                     state === 'current' &&
                       (isBoss
-                        ? 'animate-pulse border-white bg-gradient-to-br from-red-400 to-rose-500 text-white ring-4 ring-red-300/50'
-                        : 'animate-pulse border-white bg-gradient-to-br from-amber-300 to-orange-400 text-white ring-4 ring-amber-300/50'),
+                        ? 'border-white bg-gradient-to-br from-red-400 to-rose-500 text-white ring-4 ring-red-300/50'
+                        : 'border-white bg-gradient-to-br from-amber-300 to-orange-400 text-white ring-4 ring-amber-300/50'),
                     state === 'passed' && 'border-emerald-200 bg-emerald-400',
                     state === 'locked' && 'border-stone-200 bg-stone-300/80',
                   )}

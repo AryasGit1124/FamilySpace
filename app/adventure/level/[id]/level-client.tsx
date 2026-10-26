@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
 import { useAuth } from '@/components/auth-provider'
@@ -175,7 +176,9 @@ export function LevelChallenge({
   const [totalHp, setTotalHp] = useState(NORMAL_HP)
   const [phase, setPhase] = useState<Phase>('fight')
   const [wrongPicks, setWrongPicks] = useState<string[]>([])
-  const [shakeKey, setShakeKey] = useState(0)
+  /** 怪兽动画：答错抖动 / 答对击退；animKey 用于重启 CSS 动画 */
+  const [monsterAnim, setMonsterAnim] = useState<'shake' | 'hit' | null>(null)
+  const [animKey, setAnimKey] = useState(0)
   const [locked, setLocked] = useState<boolean | null>(null)
   /** 首答正确数（本题没点错过就答对） */
   const [firstTryCorrect, setFirstTryCorrect] = useState(0)
@@ -265,6 +268,9 @@ export function LevelChallenge({
       if (wrongPicks.length === 0) setFirstTryCorrect((c) => c + 1)
       const nextHp = hp - 1
       setHp(nextHp)
+      // 答对：怪兽受击退
+      setMonsterAnim('hit')
+      setAnimKey((k) => k + 1)
       speakChinese(
         nextHp === 0 ? `攻击成功！${boss ? 'Boss' : '怪兽'}被打败啦！` : '攻击成功！',
       )
@@ -279,7 +285,9 @@ export function LevelChallenge({
       }
     } else {
       setWrongPicks((prev) => [...prev, option])
-      setShakeKey((k) => k + 1)
+      // 答错：怪兽抖动
+      setMonsterAnim('shake')
+      setAnimKey((k) => k + 1)
       speakChinese('再试一次')
     }
   }
@@ -319,18 +327,43 @@ export function LevelChallenge({
         backHref="/adventure"
         backLabel="返回地图"
       />
-      <div className="flex flex-col gap-5 px-5 pb-6">
-        {/* 怪兽区 */}
-        <section className="flex flex-col items-center gap-2 rounded-2xl border bg-card p-5">
+      {/* 手机端上下排列；iPad 横屏（lg+）左右分栏：左怪兽右题目 */}
+      <div className="flex flex-col gap-5 px-5 pb-6 lg:mx-auto lg:w-full lg:max-w-6xl lg:flex-row lg:items-stretch lg:gap-8">
+        {/* 怪兽区（左侧栏） */}
+        <section className="flex flex-col items-center justify-center gap-2 rounded-2xl border bg-card p-5 lg:flex-1 lg:gap-4 lg:p-8">
           {phase === 'fight' ? (
             <>
-              <span key={shakeKey} className={cn('text-7xl', shakeKey > 0 && 'math-shake')} aria-hidden="true">
+              <span
+                key={animKey}
+                className={cn(
+                  'text-7xl lg:text-9xl',
+                  monsterAnim === 'hit' && 'monster-hit',
+                  monsterAnim === 'shake' && 'math-shake',
+                )}
+                aria-hidden="true"
+              >
                 {monster}
               </span>
-              <div className="text-xl tracking-widest" aria-label={`怪兽剩余 ${hp} 点血`}>
+              <div
+                className="text-xl tracking-widest lg:text-4xl"
+                aria-label={`怪兽剩余 ${hp} 点血`}
+              >
                 {Array.from({ length: totalHp }, (_, i) => (i < hp ? '❤️' : '🤍')).join('')}
               </div>
-              <p className="text-xs text-muted-foreground">
+              {question && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="mt-1 lg:h-12 lg:px-6 lg:text-lg"
+                  onClick={() =>
+                    question.kind === 'chinese' ? speakChar(question.body) : speakChinese(question.prompt)
+                  }
+                >
+                  <Volume2 aria-hidden="true" />
+                  再听一遍
+                </Button>
+              )}
+              <p className="text-xs text-muted-foreground lg:text-sm">
                 {boss ? 'Boss 有 5 颗心，答对 5 题才能打败它' : '答对题目就能攻击怪兽'}
               </p>
             </>
@@ -341,13 +374,13 @@ export function LevelChallenge({
                 onClick={openChest}
                 disabled={phase === 'opened'}
                 aria-label={phase === 'chest' ? '打开宝箱' : '宝箱已打开'}
-                className={cn('text-7xl transition-transform', phase === 'chest' && 'animate-bounce hover:scale-110')}
+                className={cn('text-7xl transition-transform md:text-9xl', phase === 'chest' && 'animate-bounce hover:scale-110')}
               >
                 🎁
               </button>
               {phase === 'opened' && (
                 <>
-                  <div className="flex gap-1 text-5xl" aria-hidden="true">
+                  <div className="flex gap-1 text-5xl md:text-7xl" aria-hidden="true">
                     {Array.from({ length: Math.max(earnedStars, 1) }, (_, i) => (
                       <span
                         key={i}
@@ -373,10 +406,10 @@ export function LevelChallenge({
           )}
         </section>
 
-        {/* 题目卡片区（iPad 大按钮） */}
+        {/* 题目卡片区（右侧栏，iPad 大按钮） */}
         {phase === 'fight' && question && (
-          <section className="flex flex-col gap-4 rounded-2xl border bg-card p-5">
-            <p className="text-sm text-muted-foreground">
+          <section className="flex flex-col gap-4 rounded-2xl border bg-card p-5 lg:flex-[1.5] lg:justify-center lg:gap-6 lg:p-8">
+            <p className="text-sm text-muted-foreground lg:text-base">
               第 {qIndex + 1} 题 / 共 {totalHp} 题 ·{' '}
               {question.kind === 'chinese' ? '语文' : question.kind === 'logic' ? '逻辑' : '数学'}
             </p>
@@ -387,15 +420,20 @@ export function LevelChallenge({
               }
               aria-label="播放题目语音"
               className={cn(
-                'flex min-h-28 items-center justify-center rounded-xl bg-muted/50 px-3 py-5 text-center',
+                'flex min-h-28 items-center justify-center rounded-xl bg-muted/50 px-3 py-5 text-center lg:min-h-40',
                 question.kind === 'logic'
-                  ? 'text-4xl leading-relaxed tracking-wider'
-                  : 'text-5xl font-bold tracking-widest',
+                  ? 'text-4xl leading-relaxed tracking-wider lg:text-6xl'
+                  : 'text-5xl font-bold tracking-widest lg:text-7xl',
               )}
             >
               {question.body}
             </button>
-            <div className={cn('grid gap-3', question.options.length === 4 ? 'grid-cols-2' : 'grid-cols-3')}>
+            <div
+              className={cn(
+                'grid gap-3 lg:gap-5',
+                question.options.length === 4 ? 'grid-cols-2' : 'grid-cols-3 lg:grid-cols-2',
+              )}
+            >
               {question.options.map((option) => {
                 const wrong = wrongPicks.includes(option)
                 return (
@@ -405,8 +443,8 @@ export function LevelChallenge({
                     disabled={wrong}
                     onClick={() => choose(option)}
                     className={cn(
-                      'flex items-center justify-center rounded-2xl border bg-background p-6 font-semibold transition-colors hover:bg-muted active:scale-95',
-                      question.kind === 'logic' ? 'text-4xl' : 'text-3xl',
+                      'flex items-center justify-center rounded-2xl border bg-background p-6 font-semibold transition-colors hover:bg-muted active:scale-95 lg:py-8',
+                      question.kind === 'logic' ? 'text-4xl lg:text-6xl' : 'text-3xl lg:text-5xl',
                       wrong && 'math-shake opacity-40',
                     )}
                   >

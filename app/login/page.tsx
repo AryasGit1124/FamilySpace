@@ -48,10 +48,19 @@ function toFriendlyError(err: unknown) {
   const code = (err as { code?: string }).code
   const message = (err as { message?: string }).message ?? ''
   if (code === '42P17') {
-    return '数据库策略互相引用导致递归（42P17），请在 Supabase SQL Editor 执行 scripts/create-auth-tables.sql 修复'
+    return '数据库策略互相引用导致递归（42P17），请在 Supabase SQL Editor 执行 scripts/enable-rls-strict.sql 修复'
   }
   if (code === '42P01') {
     return 'families / profiles 表不存在，请先在 Supabase SQL Editor 执行 scripts/create-auth-tables.sql'
+  }
+  if (code === '42501') {
+    return '数据库权限不足（RLS 拦截），请确认已执行 scripts/enable-rls-strict.sql，且当前会话已登录'
+  }
+  if (code === 'PGRST301' || code === 'PGRST116') {
+    return '查询被 RLS 策略拦截或没有返回数据，请检查 profiles / families 的策略'
+  }
+  if (code === 'PGRST202') {
+    return '缺少 find_family_by_invite_code 函数，请执行 scripts/enable-rls-strict.sql'
   }
   if (code === 'PGRST204') {
     return `数据库字段和代码不一致（${message}），请执行 scripts/create-auth-tables.sql 补齐表结构`
@@ -60,6 +69,39 @@ function toFriendlyError(err: unknown) {
     return 'Supabase 还没有开启匿名登录：请在 Authentication → Providers → Anonymous 中打开'
   }
   return message || (err instanceof Error ? err.message : String(err))
+}
+
+/** 拼出可复制的完整报错（Supabase 错误对象不可枚举，直接打印会是 {}） */
+function describeError(err: unknown): string {
+  const { code, message, details, hint } = err as {
+    code?: string
+    message?: string
+    details?: string
+    hint?: string
+  }
+  if (!code && !message && err instanceof Error) return err.message
+  return [
+    code ? `code=${code}` : '',
+    message ? `message=${message}` : '',
+    details ? `details=${details}` : '',
+    hint ? `hint=${hint}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+/** 某个步骤失败时抛出带步骤名的错误，方便 alert 里定位 */
+function stageError(stage: string, err: unknown): Error {
+  const friendly = toFriendlyError(err)
+  const detail = describeError(err)
+  const error = new Error(`${stage}失败：${friendly}${detail && detail !== friendly ? `\n${detail}` : ''}`)
+  ;(error as Error & { code?: string }).code = (err as { code?: string }).code
+  return error
+}
+
+/** alert 里给出可复制的完整信息，方便直接截图反馈 */
+function formatAlert(action: string, message: string): string {
+  return `${action}失败\n\n${message}\n\n（如仍无法解决，请把这段文字截图给开发者）`
 }
 
 /** Supabase 报错对象不可枚举，console.error 直接打印会是 {}，这里显式取出关键字段 */
@@ -91,9 +133,11 @@ async function ensureAnonymousUser(
     if (/anonymous.*disabled|anonymous sign-ins are disabled/i.test(error.message)) {
       throw new Error('Supabase 还没有开启匿名登录：请在 Authentication → Providers → Anonymous 中打开')
     }
-    throw error
+    throw stageError('匿名登录', error)
   }
-  if (!data.user) throw new Error('匿名登录失败，请稍后重试')
+  if (!data.user) throw new Error('匿名登录失败：没有返回用户信息，请稍后重试')
+  // 会话必须立刻落 cookie，否则后续 families/profiles 的写入会以未登录身份被 RLS 拦截
+  if (!data.session) throw new Error('匿名登录失败：没有拿到会话（session 为空），请检查 Supabase URL / Key 配置')
   return data.user
 }
 
@@ -144,12 +188,14 @@ export default function LoginPage() {
 
     setBusy('create')
     setError('')
+    let stage = '匿名登录'
     try {
       const permission = permissionOf(selectedRole)
       const user = await ensureAnonymousUser(supabase, permission, selectedRole)
 
       let familyId = ''
       let code = ''
+      stage = '创建家庭（families.insert）'
       for (let attempt = 0; attempt < 5; attempt += 1) {
         const nextCode = generateInviteCode()
         try {
@@ -161,16 +207,18 @@ export default function LoginPage() {
           if (!isDuplicateCodeError(err)) throw err
         }
       }
-      if (!familyId) throw new Error('邀请码生成失败，请稍后重试')
+      if (!familyId) throw new Error('邀请码生成失败（连续 5 次重复），请稍后重试')
 
       // 先绑定 profile（RLS 策略依赖 profiles.family_id 判定当前家庭），
       // 再写默认学科，否则 subjects 的写入会被 RLS 拦截
+      stage = '绑定家长身份（profiles.upsert）'
       await upsertProfile({
         id: user.id,
         family_id: familyId,
         role: permission,
         display_name: selectedRole,
       })
+      stage = '清理旧设备记录（profiles.delete）'
       await dedupeDeviceProfile(supabase, familyId, selectedRole, user.id)
 
       // 新家庭默认带上语文/数学/英语等学科，失败不阻塞建家庭
@@ -184,8 +232,10 @@ export default function LoginPage() {
       window.alert(`家庭创建成功！邀请码：${code}\n把邀请码发给家人，就能一起加入这个家。`)
       router.replace('/')
     } catch (err) {
-      logError('[Login] 创建家庭失败:', err)
-      setError(toFriendlyError(err))
+      logError(`[Login] ${stage}失败:`, err)
+      const message = stageError(stage, err).message
+      setError(message)
+      window.alert(formatAlert('创建家庭', message))
     } finally {
       setBusy(null)
     }
@@ -205,25 +255,32 @@ export default function LoginPage() {
 
     setBusy('join')
     setError('')
+    let stage = '匿名登录'
     try {
       const permission = permissionOf(selectedRole)
       const user = await ensureAnonymousUser(supabase, permission, selectedRole)
+
+      stage = '查询家庭（邀请码）'
       const family = await fetchFamilyByInviteCode(inviteCode.trim().toUpperCase())
       if (!family) throw new Error('邀请码不存在，请确认后重试')
 
+      stage = '绑定家长身份（profiles.upsert）'
       await upsertProfile({
         id: user.id,
         family_id: family.id,
         role: permission,
         display_name: selectedRole,
       })
+      stage = '清理旧设备记录（profiles.delete）'
       await dedupeDeviceProfile(supabase, family.id, selectedRole, user.id)
       setActiveFamilyId(family.id)
       await refreshProfile()
       router.replace('/')
     } catch (err) {
-      logError('[Login] 加入家庭失败:', err)
-      setError(toFriendlyError(err))
+      logError(`[Login] ${stage}失败:`, err)
+      const message = stageError(stage, err).message
+      setError(message)
+      window.alert(formatAlert('加入家庭', message))
     } finally {
       setBusy(null)
     }

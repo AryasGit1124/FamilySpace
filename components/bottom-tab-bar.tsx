@@ -38,8 +38,10 @@ function getActiveSubject(
  */
 export function BottomTabBar() {
   const pathname = usePathname()
-  const { role } = useAuth()
+  const { role, profile } = useAuth()
   const [tabSubjects, setTabSubjects] = useState<{ id: string; name: string }[]>([])
+  /** 家庭 id：登录信息异步加载完成前为 undefined，拿到后触发一次重新拉取 */
+  const familyId = profile?.family_id ?? null
 
   const load = useCallback(async () => {
     try {
@@ -55,9 +57,11 @@ export function BottomTabBar() {
     }
   }, [])
 
+  // 首次挂载时 AuthProvider 可能还没拿到 profile，此时家庭上下文为空、
+  // 查询会因 RLS 返回空数组；等 familyId 就绪后必须再拉一次，否则 Tab 永远只剩「今日」
   useEffect(() => {
     void load()
-  }, [load, pathname])
+  }, [load, pathname, familyId, role])
 
   useEffect(() => {
     const onSubjectsChanged = () => {
@@ -67,6 +71,7 @@ export function BottomTabBar() {
     return () => window.removeEventListener('subjects-changed', onSubjectsChanged)
   }, [load])
 
+  // 角色还没加载出来时按家长端渲染，避免登录后 Tab 只剩「今日」看起来像坏了
   const isChild = role === 'child'
   const activeSubject = useMemo(() => getActiveSubject(pathname, tabSubjects), [pathname, tabSubjects])
 
@@ -106,10 +111,11 @@ export function BottomTabBar() {
   return (
     <nav
       aria-label="主导航"
-      className="fixed bottom-0 z-30 h-20 w-full border-t bg-white pb-[env(safe-area-inset-bottom)]"
+      className="fixed bottom-0 z-50 w-full border-t bg-white pb-[env(safe-area-inset-bottom)]"
     >
-      {/* 手机端等分铺满；iPad 端（md+）收窄居中 + 固定间距，Tab 不再散落到屏幕两端 */}
-      <ul className="mx-auto flex h-full w-full max-w-md items-center justify-around md:gap-4 md:max-w-2xl">
+      {/* 手机端等分铺满；iPad 端（md+）收窄居中 + 固定间距，Tab 不再散落到屏幕两端。
+          高度放在 ul 上：避开 iPhone 底部安全区把 h-20 吃掉一半导致文字被裁剪 */}
+      <ul className="mx-auto flex h-20 w-full max-w-md items-center justify-around md:gap-4 md:max-w-2xl">
         {tabs.map(({ href, label, icon: Icon, isActive }) => {
           const active = isActive ? isActive(pathname) : pathname.startsWith(href)
           return (
