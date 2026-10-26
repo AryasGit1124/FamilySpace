@@ -1,11 +1,16 @@
 'use client'
 
-import { useRef, useState } from 'react'
-import { BookOpenCheck, RotateCcw, TriangleAlert } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { BookOpenCheck, CheckCircle2, RotateCcw, TriangleAlert } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/components/auth-provider'
-import { updateMediaTeaching, type MediaRow } from '@/lib/supabase-queries'
+import { handleTeacherCheckin } from '@/lib/rewards'
+import {
+  fetchTodayCheckin,
+  updateMediaTeaching,
+  type MediaRow,
+} from '@/lib/supabase-queries'
 import { cn } from '@/lib/utils'
 
 /** 播放进度写入 localStorage 的最小间隔 */
@@ -46,6 +51,64 @@ export function MediaClient({ media }: { media: MediaRow }) {
   const [markFeedback, setMarkFeedback] = useState<string | null>(null)
   /** 当前浏览器无法解码视频画面（HEVC 等）时置 true，展示提示横幅 */
   const [codecIssue, setCodecIssue] = useState(false)
+
+  // ── 线下课打卡：资料的 course_id 就是课表任务 id ──
+  const courseTaskId = media.course_id
+  const [checkedIn, setCheckedIn] = useState(false)
+  const [checkinLoading, setCheckinLoading] = useState(Boolean(courseTaskId))
+  const [checkingIn, setCheckingIn] = useState(false)
+  const [checkFeedback, setCheckFeedback] = useState<string | null>(null)
+
+  // 进入页面时查一次今天是否已给该课程打卡
+  useEffect(() => {
+    if (!courseTaskId) {
+      setCheckinLoading(false)
+      return
+    }
+    let cancelled = false
+    setCheckinLoading(true)
+    fetchTodayCheckin(courseTaskId)
+      .then((done) => {
+        if (!cancelled) setCheckedIn(done)
+      })
+      .catch((err: unknown) => {
+        console.warn('[MediaClient] 查询打卡状态失败:', err)
+      })
+      .finally(() => {
+        if (!cancelled) setCheckinLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [courseTaskId])
+
+  /** 线下课打卡：写 checkins + star_ledger（含连续 5 天额外奖励），成功后把资料标记为已带学 */
+  const handleCheckin = async () => {
+    if (!courseTaskId || checkedIn || checkingIn) return
+    setCheckingIn(true)
+    setCheckFeedback(null)
+    try {
+      const { earned, isStreakBonus } = await handleTeacherCheckin(courseTaskId, '')
+      setCheckedIn(true)
+      // 打卡即视为已完成学习：同步标记「已带学」，资料库和孩子端都能看到
+      try {
+        await updateMediaTeaching(media.id, { teaching_status: 'learned' })
+        setStatus('learned')
+      } catch (err) {
+        console.warn('[MediaClient] 打卡后标记已带学失败:', err)
+      }
+      setCheckFeedback(
+        earned > 0
+          ? `打卡成功！获得 ${earned} 颗星星⭐${isStreakBonus ? '（连续 5 天额外 +3 颗）' : ''}`
+          : '今天已经打过卡啦，明天继续加油',
+      )
+    } catch (err) {
+      console.error('[MediaClient] 线下课打卡失败:', err)
+      setCheckFeedback('打卡失败，请重试')
+    } finally {
+      setCheckingIn(false)
+    }
+  }
 
   // 断点续播：元数据加载完成后，若上次进度有效（>0 且未超过总时长）则跳转到该位置
   const handleLoadedMetadata = () => {
@@ -189,6 +252,33 @@ export function MediaClient({ media }: { media: MediaRow }) {
             .filter(Boolean)
             .join(' · ')}
         </p>
+
+        {/* ── 线下课打卡：孩子端和家长端都能看到 ── */}
+        <div className="mx-auto w-full max-w-3xl lg:max-w-5xl">
+          <Button
+            type="button"
+            onClick={() => void handleCheckin()}
+            disabled={!courseTaskId || checkedIn || checkingIn || checkinLoading}
+            className={cn(
+              'h-14 w-full rounded-2xl text-lg font-bold',
+              checkedIn && 'bg-muted text-muted-foreground hover:bg-muted',
+            )}
+          >
+            <CheckCircle2 className="size-6" aria-hidden="true" />
+            {checkinLoading
+              ? '查询打卡状态…'
+              : !courseTaskId
+                ? '该资料未关联课程，无法打卡'
+                : checkingIn
+                  ? '打卡中…'
+                  : checkedIn
+                    ? '今日已打卡'
+                    : '完成学习打卡'}
+          </Button>
+          {checkFeedback && (
+            <p className="mt-2 text-center text-sm font-medium text-emerald-700">{checkFeedback}</p>
+          )}
+        </div>
 
         {isParent ? (
           /* ── 家长端：协同标记 + 陪伴备注（数据存 Supabase，另一端刷新即可看到） ── */

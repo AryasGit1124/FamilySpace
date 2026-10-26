@@ -518,6 +518,21 @@ export async function insertCheckin(taskId: string, checkinDate: string, stars =
   await insertStar(stars)
 }
 
+/** 今天是否已给该任务打过卡（媒体详情页「线下课打卡」状态用） */
+export async function fetchTodayCheckin(taskId: string): Promise<boolean> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data, error } = await scoped(
+    supabase.from('checkins').select('task_id').eq('task_id', taskId).eq('checkin_date', todayStr()),
+    familyId,
+  ).limit(1)
+  if (error) {
+    console.warn('[Checkin] 查询今日打卡状态失败:', error.message)
+    return false
+  }
+  return (data ?? []).length > 0
+}
+
 /** 拉取最近 N 天的打卡日期，用于统计累计/连续打卡天数 */
 export async function fetchCheckinDates(days = 90): Promise<string[]> {
   const supabase = await requireSupabase()
@@ -616,23 +631,35 @@ export type LiteracyChar = {
   char: string
   pinyin: string | null
   lesson: number | null
+  /** AI 生成的字卡数据，未填充时为 null（前端降级） */
+  emoji?: string | null
+  word?: string | null
+  sentence?: string | null
 }
 
 export type MasteryStatus = 'mastered' | 'review'
 
-const LITERACY_CHAR_COLUMNS = 'id, level, char, pinyin, lesson'
+const LITERACY_CHAR_COLUMNS = 'id, level, char, pinyin, lesson, emoji, word, sentence'
 
 /** 某级别的全部汉字，按课次排序 */
 export async function fetchLiteracyCharsByLevel(level: number): Promise<LiteracyChar[]> {
   const supabase = await requireSupabase()
-  const { data, error } = await supabase
-    .from('literacy_chars')
-    .select(LITERACY_CHAR_COLUMNS)
-    .eq('level', level)
-    .order('lesson', { ascending: true })
-    .order('created_at', { ascending: true })
-  if (error) throw error
-  return (data ?? []) as LiteracyChar[]
+  const query = (columns: string) =>
+    supabase
+      .from('literacy_chars')
+      .select(columns)
+      .eq('level', level)
+      .order('lesson', { ascending: true })
+      .order('created_at', { ascending: true })
+
+  const primary = await query(LITERACY_CHAR_COLUMNS)
+  if (!primary.error) return (primary.data ?? []) as LiteracyChar[]
+
+  // 数据库还没加 emoji/word/sentence 字段时回退基础字段，避免识字页直接崩
+  console.warn('[Literacy] 读取 AI 字卡字段失败，回退基础字段:', primary.error.message)
+  const fallback = await query('id, level, char, pinyin, lesson')
+  if (fallback.error) throw fallback.error
+  return (fallback.data ?? []) as LiteracyChar[]
 }
 
 /** char_id → status 的映射，用于字卡/测试页回显掌握状态 */

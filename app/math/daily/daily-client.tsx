@@ -10,13 +10,15 @@ import { speakChinese, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 import { MathBackLink } from '@/app/math/game-ui'
 
-/** 每个游戏的题数 / 总题数 */
-const QUESTIONS_PER_STEP = 2
-const TOTAL_QUESTIONS = 8
+/** 每个环节的题数 / 总题数：4 个环节各 4 题，共 16 题 */
+const QUESTIONS_PER_STEP = 4
+const TOTAL_QUESTIONS = 16
 const STEP_LABELS = ['点数', '匹配', '比大小', '加减法'] as const
 type StepKind = (typeof STEP_LABELS)[number]
 
 const EMOJIS = ['🍎', '🐟', '⭐', '🍌', '🐰', '🌸', '🐱', '🚗', '🎈', '🍓']
+/** 比大小 / 加减法统一用苹果做具象配图 */
+const APPLE = '🍎'
 
 type CountQ = { kind: '点数'; emoji: string; count: number; options: number[] }
 type MatchQ = { kind: '匹配'; target: number; boxes: { emoji: string; count: number }[] }
@@ -121,12 +123,40 @@ function questionSpeech(q: Question): string {
   }
 }
 
-/** 本次闯关的星星规则：首答对 7-8 题 → 2 星；对 5-6 题 → 1 星；否则 0 星 */
+/** 本次闯关（16 题）的星星规则：首答 16 题全对 → 2 星；≥14 题（90%以上） → 1 星；否则 0 星 */
 function mathDailyStarRule(accuracy: number): number {
   const correct = Math.round(accuracy * TOTAL_QUESTIONS)
-  if (correct >= 7) return 2
-  if (correct >= 5) return 1
+  if (correct >= TOTAL_QUESTIONS) return 2
+  if (correct >= 14) return 1
   return 0
+}
+
+/** 具象配图：一组 Emoji，可把前 cut 个标成「被减掉」的灰字删除线 */
+function EmojiStack({
+  emoji,
+  count,
+  cut = 0,
+}: {
+  emoji: string
+  count: number
+  cut?: number
+}) {
+  return (
+    <div className="flex max-w-[120px] flex-wrap justify-center gap-1">
+      {Array.from({ length: count }).map((_, i) => (
+        <span
+          key={i}
+          aria-hidden="true"
+          className={cn(
+            'text-2xl leading-none md:text-3xl',
+            i < cut && 'text-muted-foreground line-through opacity-40',
+          )}
+        >
+          {emoji}
+        </span>
+      ))}
+    </div>
+  )
 }
 
 export function MathDailyClient({ taskId, backHref }: { taskId: string | null; backHref?: string }) {
@@ -208,12 +238,12 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
       setLocked(true)
       stopSpeak()
       if (question?.kind === '比大小') {
-        // 视觉填入：符号填进表达式，朗读完整句子（如「5 小于 8」），停留 1.5 秒再切题
+        // 视觉填入：符号填进表达式，朗读完整句子（如「4 小于 13」），停留 2 秒再切题
         setFilledSymbol(key)
         speakChinese(
           `${question.a} ${key === '<' ? '小于' : key === '>' ? '大于' : '等于'} ${question.b}`,
         )
-        timerRef.current = window.setTimeout(advance, 1500)
+        timerRef.current = window.setTimeout(advance, 2000)
       } else {
         speakChinese('答对了')
         timerRef.current = window.setTimeout(advance, 800)
@@ -246,45 +276,27 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
     )
 
   return (
-    <>
-      {/* 顶部仅保留返回入口与小字提示，不再显示大标题 */}
-      <div className="flex items-center justify-between px-5 pt-4">
+    <div className="mx-auto flex h-[calc(100dvh-10rem)] w-full max-w-5xl flex-col overflow-hidden px-3 pb-2">
+      {/* 顶部只保留返回入口与极简进度，不再有标题和步骤条 */}
+      <div className="flex shrink-0 items-center justify-between pt-1">
         <MathBackLink href={backHref ?? '/math'} label="返回数学" />
-      </div>
-      <p className="mt-1 px-5 text-xs text-muted-foreground">点数 → 匹配 → 比大小 → 加减法，完成 8 题打卡</p>
-
-      {/* 步骤进度条 */}
-      <div className="flex items-center gap-1 px-5 pb-2">
-        {STEP_LABELS.map((label, i) => (
-          <div key={label} className="flex flex-1 flex-col items-center gap-1">
-            <span
-              className={cn(
-                'flex size-6 items-center justify-center rounded-full text-xs font-bold',
-                stepIndex > i && 'bg-emerald-500 text-white',
-                stepIndex === i && 'bg-primary text-primary-foreground',
-                stepIndex < i && 'bg-muted text-muted-foreground',
-              )}
-            >
-              {i + 1}
-            </span>
-            <span
-              className={cn(
-                'text-[11px]',
-                stepIndex === i ? 'font-semibold text-foreground' : 'text-muted-foreground',
-              )}
-            >
-              {label}
-            </span>
-          </div>
-        ))}
+        {stepIndex < STEP_LABELS.length && (
+          <span className="text-[11px] font-medium text-muted-foreground">
+            第 {doneCount + 1} / {TOTAL_QUESTIONS} 题 · {stepKind}
+          </span>
+        )}
       </div>
 
-      <div className="flex flex-col gap-5 px-5 pb-6">
-        {error && <p className="rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
+      {error && (
+        <p className="mt-1 shrink-0 rounded-xl bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
+          {error}
+        </p>
+      )}
 
-        {/* ════════ 结算页 ════════ */}
-        {stepIndex >= STEP_LABELS.length ? (
-          <div className="flex flex-col items-center gap-4 rounded-2xl border bg-card p-8 text-center">
+      {/* ════════ 结算页 ════════ */}
+      {stepIndex >= STEP_LABELS.length ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center">
+          <div className="flex w-full max-w-md flex-col items-center gap-4 rounded-2xl border bg-card p-8 text-center">
             <p className="text-lg font-bold">今日闯关完成！🎉</p>
             <p className="text-sm leading-relaxed text-muted-foreground">
               首答正确 <span className="font-semibold text-foreground">{totalFirstTryCorrect}</span> / {TOTAL_QUESTIONS} 题
@@ -309,53 +321,62 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
               </>
             )}
           </div>
-        ) : !question ? (
-          <p className="py-10 text-center text-sm text-muted-foreground">题目准备中…</p>
-        ) : (
-          <>
-            <p className="text-center text-sm text-muted-foreground">
-              第 {doneCount + 1} / {TOTAL_QUESTIONS} 题 · {stepKind}
-            </p>
-
-            {/* ════════ Step 1：点数 ════════ */}
-            {question.kind === '点数' && (
-              <>
-                <section className="flex min-h-44 flex-wrap items-center justify-center gap-2 rounded-2xl border bg-card p-6">
+        </div>
+      ) : !question ? (
+        <p className="flex flex-1 items-center justify-center text-sm text-muted-foreground">题目准备中…</p>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col gap-2 pt-1">
+          {/* ════════ Step 1：点数 ════════ */}
+          {question.kind === '点数' && (
+            <>
+              <div className="flex shrink-0 items-center justify-center gap-2 md:gap-3">
+                <p className="text-lg font-bold md:text-2xl">看看一共有几个？</p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0 gap-1 px-3 py-1.5 text-xs md:px-4 md:py-2 md:text-sm"
+                  onClick={() => {
+                    stopSpeak()
+                    speakChinese(questionSpeech(question))
+                  }}
+                >
+                  <Volume2 className="size-4" aria-hidden="true" />
+                  听一听
+                </Button>
+              </div>
+              <div className="flex min-h-0 flex-1 items-center justify-center rounded-2xl border bg-card p-4">
+                <div className="flex max-w-full flex-wrap items-center justify-center gap-2 md:gap-3">
                   {Array.from({ length: question.count }).map((_, i) => (
-                    <span key={i} className="text-4xl leading-none" aria-hidden="true">
+                    <span key={i} className="text-4xl leading-none md:text-5xl" aria-hidden="true">
                       {question.emoji}
                     </span>
                   ))}
-                </section>
-                <div className="grid grid-cols-3 gap-3">
-                  {question.options.map((n) => (
-                    <button
-                      key={n}
-                      type="button"
-                      disabled={locked || wrongKeys.has(String(n))}
-                      onClick={() => pick(String(n), n === question.count)}
-                      className={optionBtnClass(String(n), 'h-20 text-4xl')}
-                    >
-                      {n}
-                    </button>
-                  ))}
                 </div>
-              </>
-            )}
+              </div>
+              <div className="grid shrink-0 grid-cols-3 gap-2 md:gap-4">
+                {question.options.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    disabled={locked || wrongKeys.has(String(n))}
+                    onClick={() => pick(String(n), n === question.count)}
+                    className={optionBtnClass(String(n), 'h-16 text-4xl md:h-20 md:text-5xl')}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
 
-            {/* ════════ Step 2：数量匹配 ════════ */}
-            {question.kind === '匹配' && (
-              <>
-                <section className="flex flex-col items-center gap-2 rounded-2xl border bg-card p-4">
-                  <p className="text-lg font-bold">
-                    找出数量是 <span className="text-2xl text-primary">{question.target}</span> 的图片
-                  </p>
-                  <Button size="sm" variant="outline" onClick={() => { stopSpeak(); speakChinese(questionSpeech(question)) }}>
-                    <Volume2 aria-hidden="true" />
-                    再听一遍
-                  </Button>
-                </section>
-                <div className="grid grid-cols-3 gap-3">
+          {/* ════════ Step 2：数量匹配 ════════ */}
+          {question.kind === '匹配' && (
+            <>
+              <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2">
+                <p className="shrink-0 text-lg font-bold md:text-2xl">
+                  找出数量是 <span className="text-2xl text-primary md:text-3xl">{question.target}</span> 的图片
+                </p>
+                <div className="grid min-h-0 w-full flex-1 grid-cols-3 items-stretch gap-2 md:gap-4">
                   {question.boxes.map((box, i) => (
                     <button
                       key={i}
@@ -363,104 +384,150 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
                       disabled={locked || wrongKeys.has(String(i))}
                       onClick={() => pick(String(i), box.count === question.target)}
                       aria-label={`第 ${i + 1} 个图框`}
-                      className={optionBtnClass(String(i), 'min-h-32 flex-wrap gap-1 p-3')}
-                    >
-                      {Array.from({ length: box.count }).map((_, j) => (
-                        <span key={j} className="text-2xl leading-none" aria-hidden="true">
-                          {box.emoji}
-                        </span>
-                      ))}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {/* ════════ Step 3：比大小 ════════ */}
-            {question.kind === '比大小' && (
-              <>
-                <section className="flex items-center justify-center gap-6 rounded-2xl border bg-card p-8">
-                  <span className="text-6xl font-bold">{question.a}</span>
-                  {filledSymbol ? (
-                    <span className="flex size-14 items-center justify-center rounded-full bg-primary text-4xl font-bold text-primary-foreground shadow-md">
-                      {filledSymbol}
-                    </span>
-                  ) : (
-                    <span className="flex size-14 items-center justify-center rounded-full border-2 border-dashed border-primary/50 text-2xl font-bold text-primary">
-                      ?
-                    </span>
-                  )}
-                  <span className="text-6xl font-bold">{question.b}</span>
-                </section>
-                <div className="grid grid-cols-3 gap-3">
-                  {(['<', '>', '='] as const).map((sym) => (
-                    <button
-                      key={sym}
-                      type="button"
-                      disabled={locked || wrongKeys.has(sym)}
-                      onClick={() =>
-                        pick(
-                          sym,
-                          sym === (question.a > question.b ? '>' : question.a < question.b ? '<' : '='),
-                        )
-                      }
-                      className={optionBtnClass(sym, 'h-20 text-5xl')}
-                    >
-                      {sym}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {/* ════════ Step 4：加减法 ════════ */}
-            {question.kind === '加减法' && (
-              <>
-                {/* 难度切换 */}
-                <div className="flex justify-center gap-2">
-                  {[5, 10, 20].map((n) => (
-                    <button
-                      key={n}
-                      type="button"
-                      disabled={locked}
-                      onClick={() => switchDifficulty(n)}
-                      className={cn(
-                        'rounded-full border-2 px-4 py-1.5 text-sm font-bold transition-colors disabled:opacity-60',
-                        maxNumber === n
-                          ? 'border-primary bg-primary text-primary-foreground'
-                          : 'border-border bg-card text-muted-foreground hover:bg-muted/50',
+                      className={optionBtnClass(
+                        String(i),
+                        'h-full w-full rounded-3xl bg-white shadow-sm',
                       )}
                     >
-                      {n}以内
+                      {/* Emoji 像一朵云一样紧凑聚在卡片正中心，不使用 justify-between / space-x */}
+                      <div className="flex flex-wrap content-center items-center justify-center gap-1 p-2 md:gap-2">
+                        {Array.from({ length: box.count }).map((_, j) => (
+                          <span
+                            key={j}
+                            className="flex size-8 items-center justify-center text-2xl leading-none md:size-10 md:text-3xl"
+                            aria-hidden="true"
+                          >
+                            {box.emoji}
+                          </span>
+                        ))}
+                      </div>
                     </button>
                   ))}
                 </div>
-                <section className="flex items-center justify-center gap-3 rounded-2xl border bg-card p-8 text-5xl font-bold">
-                  <span>{question.a}</span>
-                  <span className="text-primary">{question.operator}</span>
-                  <span>{question.b}</span>
-                  <span className="text-muted-foreground">= ?</span>
-                </section>
-                <div className="grid grid-cols-3 gap-3">
-                  {question.options.map((n) => (
-                    <button
-                      key={n}
-                      type="button"
-                      disabled={locked || wrongKeys.has(String(n))}
-                      onClick={() => pick(String(n), n === question.answer)}
-                      className={optionBtnClass(String(n), 'h-20 text-4xl')}
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
+              </div>
+              <div className="flex shrink-0 justify-center">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    stopSpeak()
+                    speakChinese(questionSpeech(question))
+                  }}
+                >
+                  <Volume2 aria-hidden="true" />
+                  再听一遍
+                </Button>
+              </div>
+            </>
+          )}
 
-            <p className="text-center text-xs text-muted-foreground">第一次就点对才能拿满分星星哦</p>
-          </>
-        )}
-      </div>
-    </>
+          {/* ════════ Step 3：比大小（数字 + 苹果配图 + 中间 [?]） ════════ */}
+          {question.kind === '比大小' && (
+            <>
+              <div className="flex min-h-0 flex-1 items-center justify-center gap-4 rounded-2xl border bg-card p-4 md:gap-10">
+                <div className="flex flex-col items-center gap-2">
+                  <span className="text-6xl font-bold">{question.a}</span>
+                  <EmojiStack emoji={APPLE} count={question.a} />
+                </div>
+                {filledSymbol ? (
+                  <span className="flex size-14 shrink-0 items-center justify-center rounded-full bg-primary text-4xl font-bold text-primary-foreground shadow-md">
+                    {filledSymbol}
+                  </span>
+                ) : (
+                  <span className="flex size-14 shrink-0 items-center justify-center rounded-full border-2 border-dashed border-primary/50 text-2xl font-bold text-primary">
+                    ?
+                  </span>
+                )}
+                <div className="flex flex-col items-center gap-2">
+                  <span className="text-6xl font-bold">{question.b}</span>
+                  <EmojiStack emoji={APPLE} count={question.b} />
+                </div>
+              </div>
+              <div className="grid shrink-0 grid-cols-3 gap-2 md:gap-4">
+                {(['<', '>', '='] as const).map((sym) => (
+                  <button
+                    key={sym}
+                    type="button"
+                    disabled={locked || wrongKeys.has(sym)}
+                    onClick={() =>
+                      pick(
+                        sym,
+                        sym === (question.a > question.b ? '>' : question.a < question.b ? '<' : '='),
+                      )
+                    }
+                    className={optionBtnClass(sym, 'h-16 text-5xl md:h-20 md:text-6xl')}
+                  >
+                    {sym}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* ════════ Step 4：加减法（算式 + 苹果配图） ════════ */}
+          {question.kind === '加减法' && (
+            <>
+              <div className="flex shrink-0 justify-center gap-2">
+                {[5, 10, 20].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    disabled={locked}
+                    onClick={() => switchDifficulty(n)}
+                    className={cn(
+                      'rounded-full border-2 px-4 py-1 text-xs font-bold transition-colors disabled:opacity-60 md:text-sm',
+                      maxNumber === n
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-border bg-card text-muted-foreground hover:bg-muted/50',
+                    )}
+                  >
+                    {n}以内
+                  </button>
+                ))}
+              </div>
+              <div className="flex min-h-0 flex-1 items-center justify-center gap-3 rounded-2xl border bg-card p-3 md:gap-6">
+                <div className="flex flex-col items-center gap-1">
+                  <span className="text-5xl font-bold md:text-6xl">{question.a}</span>
+                  <EmojiStack
+                    emoji={APPLE}
+                    count={question.a}
+                    cut={question.operator === '-' ? question.b : 0}
+                  />
+                </div>
+                <span className="text-4xl font-bold text-primary md:text-5xl">{question.operator}</span>
+                <div className="flex flex-col items-center gap-1">
+                  <span className="text-5xl font-bold md:text-6xl">{question.b}</span>
+                  {question.operator === '+' ? (
+                    <EmojiStack emoji={APPLE} count={question.b} />
+                  ) : (
+                    <span className="max-w-[80px] text-center text-[10px] text-muted-foreground">
+                      划掉 {question.b} 个
+                    </span>
+                  )}
+                </div>
+                <span className="text-4xl font-bold text-muted-foreground md:text-5xl">= ?</span>
+              </div>
+              <div className="grid shrink-0 grid-cols-3 gap-2 md:gap-4">
+                {question.options.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    disabled={locked || wrongKeys.has(String(n))}
+                    onClick={() => pick(String(n), n === question.answer)}
+                    className={optionBtnClass(String(n), 'h-16 text-4xl md:h-20 md:text-5xl')}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          <p className="shrink-0 text-center text-[10px] text-muted-foreground">
+            第一次就点对才能拿满分星星哦
+          </p>
+        </div>
+      )}
+    </div>
   )
 }
