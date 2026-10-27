@@ -46,3 +46,42 @@ export function shiftDate(dateStr: string, days: number): string {
   const day = String(d.getDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
 }
+
+/**
+ * 连续打卡天数：
+ * 1. 去重后倒序排列的日期集合
+ * 2. 起点：若今天有打卡则从今天起算，否则从昨天起算（今天还没过完，允许今天还没打卡）
+ * 3. 逐天往前推，有记录则 +1，断了就停
+ */
+export function calcStreak(dates: string[]): number {
+  const set = new Set(dates)
+  let streak = 0
+  let cursor = todayStr()
+  if (!set.has(cursor)) cursor = shiftDate(cursor, -1)
+  while (set.has(cursor)) {
+    streak += 1
+    cursor = shiftDate(cursor, -1)
+  }
+  return streak
+}
+
+/** 当前月份日历：返回 { day, dateKey, count }[]，count 为当天打卡次数 */
+export function buildCurrentMonthCalendar(checkinDates: string[]) {
+  const nowKey = todayStr()
+  const year = Number(nowKey.slice(0, 4))
+  const month = Number(nowKey.slice(5, 7)) - 1 // 0-based
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const firstDayWeekday = new Date(year, month, 1).getDay() // 0=周日
+
+  const countMap = new Map<string, number>()
+  for (const d of checkinDates) countMap.set(d, (countMap.get(d) ?? 0) + 1)
+
+  const cells: { day: number; dateKey: string; count: number }[] = []
+  for (let day = 1; day <= daysInMonth; day++) {
+    const mm = String(month + 1).padStart(2, '0')
+    const dd = String(day).padStart(2, '0')
+    const dateKey = `${year}-${mm}-${dd}`
+    cells.push({ day, dateKey, count: countMap.get(dateKey) ?? 0 })
+  }
+  return { year, month: month + 1, firstDayWeekday, cells, today: todayStr() }
+}

@@ -350,9 +350,10 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     askFind(currentCard)
   }
 
-  /** 答错后的辅助入口：回字卡再看一眼 */
+  /** 答错后的辅助入口：只切回当前字的字卡（不动 step / currentWordIndex），并重新朗读 */
   const returnToCard = () => {
     if (!currentCard) return
+    stopSpeak()
     setSubStep('learn')
     speakCard(currentCard)
   }
@@ -1183,7 +1184,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
               /* 结算提示 + 紧凑操作条 */
               <div className="flex w-full shrink-0 flex-col items-center gap-3 rounded-2xl bg-emerald-50 p-4 text-center">
                 <p className="text-base font-bold text-emerald-800 md:text-lg">
-                  打卡成功！今天学会了 {todayLearnChars.length} 个新字，首答正确 {firstTryCorrect} 题，获得 {earnedStars} 颗星星！
+                  打卡成功！今天学会了 {todayLearnChars.length} 个新字，等待家长确认后就能获得 {earnedStars} 颗星星啦 ⭐
                 </p>
                 <div className="flex w-full gap-2">
                   <Button
@@ -1259,14 +1260,14 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
               </Button>
             </>
           ) : (
-            /* 找一找子页面：答对后自动切换，这里只留返回入口 */
+            /* 找一找子页面：只回到当前字的字卡，不后退整个 step */
             <Button
               variant="outline"
               className="w-full py-4 text-base md:text-lg"
-              onClick={goBackStep}
+              onClick={returnToCard}
             >
               <ArrowLeft className="size-4" aria-hidden="true" />
-              上一步
+              返回看看字卡
             </Button>
           )}
         </div>

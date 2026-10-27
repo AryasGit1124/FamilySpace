@@ -104,67 +104,205 @@ function findDuplicateFile(rows: MediaRow[], fileName: string) {
   })
 }
 
+/** Canvas → JPEG File；toBlob 失败时回退 dataURL，保证总能拿到图片文件 */
+function canvasToCoverFile(canvas: HTMLCanvasElement, name: string): Promise<File> {
+  return new Promise((resolve) => {
+    const fromDataUrl = () => {
+      const base64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1] ?? ''
+      const binary = atob(base64)
+      const bytes = new Uint8Array(binary.length)
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+      resolve(new File([bytes], name, { type: 'image/jpeg' }))
+    }
+    canvas.toBlob(
+      (blob) => {
+        if (blob && blob.size > 0) resolve(new File([blob], name, { type: 'image/jpeg' }))
+        else fromDataUrl()
+      },
+      'image/jpeg',
+      0.7,
+    )
+  })
+}
+
+/** 封面文件名：与源文件同名 + -cover.jpg */
+function coverFileName(file: File): string {
+  return `${file.name.replace(/\.[^.]+$/, '')}-cover.jpg`
+}
+
 /**
- * 浏览器端视频抽帧：取 0.5 秒处的画面生成 JPEG 封面（宽边 ≤640px）。
- * 同时充当「解码探测」：iPhone 默认拍 HEVC(H.265)，Windows 版 Chrome/Edge 大多没有
- * 解码器，表现为只闻其声不见其画，此时 videoWidth 为 0，抽帧失败返回 null。
+ * 强制兜底封面：400×300 蓝色背景 + 大号 ▶ 播放图标 + 白色文件名。
+ * 抽帧失败、超时、全黑、尺寸为 0 时使用，保证视频 100% 有封面。
  */
-async function extractVideoCover(file: File): Promise<File | null> {
-  if (!file.type.startsWith('video/')) return null
-  const url = URL.createObjectURL(file)
+function makeFallbackCover(file: File): Promise<File> {
+  const canvas = document.createElement('canvas')
+  canvas.width = 400
+  canvas.height = 300
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return Promise.reject(new Error('Canvas 不可用'))
+
+  // 纯蓝背景
+  ctx.fillStyle = '#2563eb'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+  // 居中播放图标
+  ctx.beginPath()
+  ctx.arc(200, 128, 52, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.22)'
+  ctx.fill()
+
+  ctx.beginPath()
+  ctx.moveTo(182, 96)
+  ctx.lineTo(232, 128)
+  ctx.lineTo(182, 160)
+  ctx.closePath()
+  ctx.fillStyle = '#ffffff'
+  ctx.fill()
+
+  // 底部白色文件名（超长自动截断）
+  ctx.fillStyle = '#ffffff'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.font = 'bold 20px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif'
+  let label = file.name
+  while (ctx.measureText(label).width > canvas.width - 32 && label.length > 4) {
+    label = `${label.slice(0, -2)}…`
+  }
+  ctx.fillText(label, 200, 248)
+
+  return canvasToCoverFile(canvas, coverFileName(file))
+}
+
+/** 判断画面是否接近全黑（抽样中心 32×32 区域的平均亮度） */
+function isNearlyBlack(ctx: CanvasRenderingContext2D, width: number, height: number): boolean {
   try {
-    const video = document.createElement('video')
+    const sampleSize = Math.min(32, width, height)
+    const sx = Math.max(0, Math.floor((width - sampleSize) / 2))
+    const sy = Math.max(0, Math.floor((height - sampleSize) / 2))
+    const data = ctx.getImageData(sx, sy, sampleSize, sampleSize).data
+    let sum = 0
+    for (let i = 0; i < data.length; i += 4) {
+      sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
+    }
+    return sum / (sampleSize * sampleSize) < 12
+  } catch {
+    return false
+  }
+}
+
+/** 真正从视频第 1 秒抽帧，失败或全黑返回 null（由上层走文字封面兜底） */
+async function extractVideoFrame(file: File): Promise<File | null> {
+  const url = URL.createObjectURL(file)
+  const video = document.createElement('video')
+  try {
+    video.crossOrigin = 'anonymous'
     video.muted = true
     video.playsInline = true
     video.preload = 'auto'
     video.src = url
 
+    // 1. loadeddata：此时首帧数据已经可用
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('抽帧超时')), 10_000)
+      const timer = window.setTimeout(() => reject(new Error('读取视频画面超时')), 6000)
       video.onloadeddata = () => {
-        clearTimeout(timer)
+        window.clearTimeout(timer)
         resolve()
       }
       video.onerror = () => {
-        clearTimeout(timer)
+        window.clearTimeout(timer)
         reject(new Error('视频解码失败'))
       }
     })
 
     // 有画面才能抽帧；HEVC 在不解码的浏览器里 videoWidth 为 0
-    if (video.videoWidth === 0) return null
+    if (!video.videoWidth || !video.videoHeight) throw new Error('当前浏览器无法解码视频画面')
 
-    await new Promise<void>((resolve) => {
-      video.onseeked = () => resolve()
-      video.currentTime = Math.min(0.5, (video.duration || 1) / 2)
+    // 2. 跳到第 1 秒（第 0.1 秒经常还是黑帧；短视频退化为中间位置）
+    const duration = Number.isFinite(video.duration) ? video.duration : 0
+    video.currentTime = duration > 1.2 ? 1 : Math.max(0, duration / 2)
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error('跳转视频帧超时')), 6000)
+      video.onseeked = () => {
+        window.clearTimeout(timer)
+        resolve()
+      }
     })
 
+    // 3. seeked 后再等 100ms，给浏览器时间把画面真正渲染出来
+    await new Promise((resolve) => window.setTimeout(resolve, 100))
+
+    // 4. 绘制到 Canvas 并转成 JPEG 文件
     const canvas = document.createElement('canvas')
-    const scale = Math.min(1, 640 / video.videoWidth)
-    canvas.width = Math.max(1, Math.round(video.videoWidth * scale))
-    canvas.height = Math.max(1, Math.round(video.videoHeight * scale))
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    if (!canvas.width || !canvas.height) throw new Error('封面尺寸为 0')
     const ctx = canvas.getContext('2d')
-    if (!ctx) return null
+    if (!ctx) throw new Error('Canvas 不可用')
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
 
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.8))
-    if (!blob) return null
-    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '-cover.jpg', { type: 'image/jpeg' })
+    if (isNearlyBlack(ctx, canvas.width, canvas.height)) throw new Error('抽到的是全黑画面')
+
+    const cover = await canvasToCoverFile(canvas, coverFileName(file))
+    if (!cover.size) throw new Error('封面导出为空')
+    return cover
   } catch (err) {
-    console.warn('[UploadPage] 视频抽帧失败（可能当前浏览器无法解码该视频）:', err)
+    console.warn('[UploadPage] 视频抽帧失败:', err)
     return null
   } finally {
+    video.src = ''
+    video.removeAttribute('src')
+    video.load()
     URL.revokeObjectURL(url)
   }
 }
 
 /**
+ * 视频封面提取 —— 必定返回一张图片：
+ * 优先抽第 1 秒真实画面；解码失败 / 超时 / 全黑 / 尺寸为 0 时，
+ * 自动生成 400×300 蓝色 Canvas 兜底封面，绝不返回 null，绝不卡住上传。
+ */
+async function extractVideoCover(file: File): Promise<File> {
+  const frame = await Promise.race([
+    extractVideoFrame(file),
+    new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 8000)),
+  ])
+  if (frame) return frame
+  console.warn('[UploadPage] 未拿到真实画面，使用兜底封面:', file.name)
+  return makeFallbackCover(file)
+}
+
+/**
  * 探测当前浏览器能否解码该视频的画面（用于上传前提示）。
  * 可解码返回 true；只能出声没有画面 / 完全不支持返回 false。
+ * 注意不能复用 extractVideoCover，因为它有文字封面兜底、永远有返回值。
  */
 async function probeVideoDecodable(file: File): Promise<boolean> {
-  const thumb = await extractVideoCover(file)
-  return thumb !== null
+  if (!file.type.startsWith('video/')) return true
+  const url = URL.createObjectURL(file)
+  const video = document.createElement('video')
+  try {
+    video.muted = true
+    video.playsInline = true
+    video.preload = 'metadata'
+    video.src = url
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error('探测超时')), 5000)
+      video.onloadedmetadata = () => {
+        window.clearTimeout(timer)
+        resolve()
+      }
+      video.onerror = () => {
+        window.clearTimeout(timer)
+        reject(new Error('视频解码失败'))
+      }
+    })
+    return video.videoWidth > 0
+  } catch {
+    return false
+  } finally {
+    video.src = ''
+    URL.revokeObjectURL(url)
+  }
 }
 
 /**
@@ -565,7 +703,8 @@ export default function UploadPage() {
 
     let successCount = 0
     try {
-      for (const item of items) {
+      // 串行处理：一个文件「上传视频 → 生成并上传封面 → 写 media」全部完成，再处理下一个
+      for (const [index, item] of items.entries()) {
         if (controller.signal.aborted) return
 
         const invalid = validateFile(item.file)
@@ -574,6 +713,8 @@ export default function UploadPage() {
           failedNames.push(item.file.name)
           continue
         }
+
+        const batchLabel = `第 ${index + 1}/${items.length} 个`
 
         try {
           // 1. 图片先压缩再上传（视频无法在浏览器端压缩，按原文件上传）
@@ -589,7 +730,12 @@ export default function UploadPage() {
             continue
           }
 
-          updateUpload(item.id, { status: 'uploading', percent: 0, stalling: false, message: '准备上传…' })
+          updateUpload(item.id, {
+            status: 'uploading',
+            percent: 0,
+            stalling: false,
+            message: `${batchLabel} · 准备上传…`,
+          })
 
           const safeName = prepared.name.replace(/[^\w.-]/g, '_')
           const path = `${mediaDate}/${Date.now()}-${safeName}`
@@ -607,7 +753,9 @@ export default function UploadPage() {
                   percent: total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0,
                   stalling: false,
                   message:
-                    total > 0 ? `${humanSize(loaded)} / ${humanSize(total)} · ${speed.toFixed(1)}MB/s` : undefined,
+                    total > 0
+                      ? `${batchLabel} · ${humanSize(loaded)} / ${humanSize(total)} · ${speed.toFixed(1)}MB/s`
+                      : `${batchLabel} · 上传中…`,
                 })
               },
               () => updateUpload(item.id, { stalling: true }),
@@ -624,36 +772,41 @@ export default function UploadPage() {
             )
           }
 
-          // 4. 视频用 Canvas 抽帧生成封面并上传（失败不阻塞主流程，只是列表少个封面）
+          const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path)
+          const fileUrl: string | null = urlData?.publicUrl ?? null
+          if (!fileUrl) throw new Error('视频地址获取失败')
+
+          // 4. 视频：必定生成封面（真实帧或蓝色兜底图）并上传
           let coverUrl: string | null = null
           if (prepared.type.startsWith('video/')) {
+            updateUpload(item.id, { percent: 100, message: `${batchLabel} · 正在生成封面…` })
+
             const cover = await extractVideoCover(prepared)
-            if (cover) {
-              try {
-                const coverPath = `${mediaDate}/${Date.now()}-cover-${safeName}.jpg`
-                await tusUpload(coverPath, cover, () => {}, undefined, controller.signal)
-                coverUrl = supabase.storage.from(BUCKET).getPublicUrl(coverPath).data.publicUrl
-              } catch (coverErr) {
-                // 用户在封面上传期间点了取消：按取消处理，不再继续写库
-                if (coverErr instanceof Error && coverErr.name === 'AbortError') return
-                console.warn('[UploadPage] 封面上传失败，忽略:', coverErr)
-              }
+            const coverPath = `${mediaDate}/${Date.now()}-cover-${safeName}.jpg`
+            try {
+              await tusUpload(coverPath, cover, () => {}, undefined, controller.signal)
+            } catch (coverErr) {
+              // 用户在封面上传期间点了取消：按取消处理，不再继续写库
+              if (coverErr instanceof Error && coverErr.name === 'AbortError') return
+              throw new Error(`封面图片上传失败：${errMsg(coverErr)}`)
             }
+            coverUrl = supabase.storage.from(BUCKET).getPublicUrl(coverPath).data.publicUrl ?? null
+            if (!coverUrl) throw new Error('封面地址获取失败')
           }
 
-          // 5. 取公开访问地址并写入 media 表（每个文件一条独立记录）
-          const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path)
+          // 5. 视频地址与封面地址都拿到后，才写入 media 表（每个文件一条记录）
+          // 注：media 表的封面字段实际名为 thumb_url（并非 cover_url），这里存的就是封面地址
+          if (prepared.type.startsWith('video/') && !coverUrl) throw new Error('视频封面缺失，已跳过写库')
           await insertMedia({
             course_id: courseId, // 课表 tasks 的 id，即这门课本身
             course_name: courseName,
             child_name: null,
             offline_class: offlineClass || null, // 例如「周一 19:20 英语 · 西溪少年宫5F」
             media_date: mediaDate,
-            file_url: urlData.publicUrl,
+            file_url: fileUrl,
             file_type: resolveFileType(prepared),
             note: note.trim() || null,
             uploader_name: '妈妈',
-            // media 表的 thumb_url 即视频封面地址（浏览器端抽帧，0.5 秒处画面）
             thumb_url: coverUrl,
           })
 

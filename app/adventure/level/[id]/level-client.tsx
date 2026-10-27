@@ -391,7 +391,8 @@ export function LevelChallenge({
                     ))}
                   </div>
                   <p className="text-base font-medium text-amber-600">
-                    本次答对 {totalHp} 题（首答正确 {firstTryCorrect} 题），获得 {earnedStars} 颗星星！
+                    本次答对 {totalHp} 题（首答正确 {firstTryCorrect} 题），
+                    等待家长确认后可获得 {earnedStars} 颗星星！
                   </p>
                   <Button size="lg" className="mt-1 text-lg" onClick={backToMap}>
                     继续前进

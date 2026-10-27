@@ -167,10 +167,12 @@ export function MemoryGame({ taskId }: { taskId: string | null }) {
               本次配对 {PAIR_COUNT} 对（首答配对 {firstTryMatches} 对）
             </p>
             {checked && (
-              <p className="text-base font-semibold text-amber-600">获得 {earnedStars} 颗星星 ⭐</p>
+              <p className="text-base font-semibold text-amber-600">
+                等待家长确认后可获得 {earnedStars} 颗星星 ⭐
+              </p>
             )}
             {checked ? (
-              <p className="text-sm font-medium text-emerald-600">今日打卡完成 ✅</p>
+              <p className="text-sm font-medium text-emerald-600">打卡成功，等待家长确认 ⏳</p>
             ) : (
               <Button className="mt-1" disabled={checkingIn} onClick={doCheckin}>
                 {checkingIn ? '正在打卡…' : '完成打卡'}

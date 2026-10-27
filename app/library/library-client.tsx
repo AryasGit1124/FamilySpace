@@ -275,15 +275,8 @@ export default function LibraryPage() {
                               className="h-40 w-full object-cover"
                             />
                           ) : (
-                            // 没有封面时降级用 video 首帧（preload=metadata），中间覆盖播放图标
-                            <video
-                              src={item.file_url}
-                              preload="metadata"
-                              muted
-                              playsInline
-                              aria-label={`${item.course_name?.trim() || '未分类'} ${item.media_date}`}
-                              className="h-40 w-full bg-slate-800 object-cover"
-                            />
+                            // 兜底：连自动生成的封面都没上传成功时，用深色背景
+                            <div className="h-40 w-full bg-slate-800" />
                           )}
 
                           {item.file_type === 'video' && (

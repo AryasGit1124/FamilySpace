@@ -1,9 +1,11 @@
 'use client'
 
 import Link from 'next/link'
+import { useCallback, useEffect, useState } from 'react'
 import {
   Baby,
   BarChart3,
+  ClipboardCheck,
   Library,
   LogOut,
   Package,
@@ -14,11 +16,13 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/components/auth-provider'
 import { roleLabel } from '@/lib/family'
+import { fetchPendingCheckinCount } from '@/lib/supabase-queries'
 import { cn } from '@/lib/utils'
 
 type MenuItem = { href: string; label: string; icon: LucideIcon; sub?: boolean }
 
 const MENU_ITEMS: MenuItem[] = [
+  { href: '/parent/approvals', label: '打卡审核', icon: ClipboardCheck },
   { href: '/stats', label: '学习统计', icon: BarChart3 },
   { href: '/upload', label: '上传资料', icon: UploadCloud },
   { href: '/library', label: '资料库', icon: Library },
@@ -30,6 +34,30 @@ const MENU_ITEMS: MenuItem[] = [
 /** 左侧抽屉菜单：滑入滑出动画 + 遮罩关闭；手机 w-[85%]，iPad 宽屏固定 w-80 */
 export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const { signOut, profile, setViewAsChild } = useAuth()
+  /** 待审核打卡数量：侧边栏「打卡审核」红点 */
+  const [pendingCount, setPendingCount] = useState(0)
+
+  const loadPendingCount = useCallback(async () => {
+    try {
+      setPendingCount(await fetchPendingCheckinCount())
+    } catch (err) {
+      console.warn('[SideMenu] 读取待审核数量失败:', err)
+    }
+  }, [])
+
+  // 打开抽屉时刷新一次，保证红点是最新的
+  useEffect(() => {
+    if (isOpen) void loadPendingCount()
+  }, [isOpen, loadPendingCount])
+
+  // 孩子提交打卡 / 家长审核后立即刷新红点
+  useEffect(() => {
+    const onChange = () => {
+      void loadPendingCount()
+    }
+    window.addEventListener('checkins-changed', onChange)
+    return () => window.removeEventListener('checkins-changed', onChange)
+  }, [loadPendingCount])
 
   return (
     <>
@@ -75,6 +103,11 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
               >
                 <Icon className={item.sub ? 'size-5 text-primary' : 'size-7 text-primary'} aria-hidden="true" />
                 {item.label}
+                {item.href === '/parent/approvals' && pendingCount > 0 && (
+                  <span className="ml-auto flex min-w-6 items-center justify-center rounded-full bg-red-500 px-2 py-0.5 text-xs font-bold text-white">
+                    {pendingCount > 99 ? '99+' : pendingCount}
+                  </span>
+                )}
               </Link>
             )
           })}

@@ -111,14 +111,15 @@ export function DynamicGamePlayer({ taskId, subjectId, title, game }: Props) {
             {isParent && <p className="text-xs text-muted-foreground">家长测试模式，不计入星星</p>}
           </div>
 
-          {saving && <p className="text-sm text-muted-foreground">正在结算星星…</p>}
+          {saving && <p className="text-sm text-muted-foreground">正在提交打卡…</p>}
 
           {checked && (
             <div className="flex animate-pulse flex-col items-center gap-1 rounded-xl bg-amber-50 px-4 py-3">
               <CheckCircle2 className="size-6 text-amber-500" aria-hidden="true" />
               <p className="text-base font-semibold text-amber-600">
-                打卡成功！获得 {earnedStars} 颗星星 ⭐
+                打卡成功！等待家长确认后，就能获得星星啦 ⭐
               </p>
+              <p className="text-xs text-amber-500">本次可得 {earnedStars} 颗星星</p>
             </div>
           )}
 

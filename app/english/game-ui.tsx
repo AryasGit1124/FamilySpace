@@ -63,13 +63,13 @@ export function RoundComplete({
       </p>
       {checked && (
         <p className="text-base font-bold text-amber-500">
-          获得 {earnedStars} 颗星星{'⭐'.repeat(Math.min(earnedStars, 5))}
+          等待家长确认后可获得 {earnedStars} 颗星星{'⭐'.repeat(Math.min(earnedStars, 5))}
         </p>
       )}
-      {checkingIn && <p className="text-sm text-muted-foreground">正在结算…</p>}
+      {checkingIn && <p className="text-sm text-muted-foreground">正在提交打卡…</p>}
       {checked && (
         <p className={cn('text-sm font-medium', testMode ? 'text-orange-500' : 'text-emerald-600')}>
-          {testMode ? '测试模式：星星未真正发放' : '今日打卡完成 ✅'}
+          {testMode ? '测试模式：未提交打卡、未发放星星' : '打卡成功！等待家长确认后，就能获得星星啦 ⭐'}
         </p>
       )}
       {error && <p className="text-sm text-destructive">{error}</p>}

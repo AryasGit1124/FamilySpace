@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { useAuth } from '@/components/auth-provider'
 import { Button } from '@/components/ui/button'
@@ -165,6 +165,8 @@ export default function LoginPage() {
   const [selectedRole, setSelectedRole] = useState<FamilyRoleLabel>('妈妈')
   const [inviteCode, setInviteCode] = useState('LUT4ZQ')
   const [busy, setBusy] = useState<Mode | null>(null)
+  /** 同步锁：网络慢时家长连点也不会触发第二次写入 */
+  const busyRef = useRef(false)
   const [error, setError] = useState('')
   const [fromLink, setFromLink] = useState(false)
   /** 默认选中「加入家庭」，第一次使用的人再切到「创建新家庭」 */
@@ -180,12 +182,13 @@ export default function LoginPage() {
 
   /** 创建新家庭：匿名登录 → 生成邀请码建家庭 → 默认学科 → 绑定 profiles */
   const handleCreate = async () => {
-    if (busy) return
+    if (busyRef.current) return
     if (!supabase) {
       setError('Supabase 未初始化，请检查 .env.local 配置')
       return
     }
 
+    busyRef.current = true
     setBusy('create')
     setError('')
     let stage = '匿名登录'
@@ -237,13 +240,14 @@ export default function LoginPage() {
       setError(message)
       window.alert(formatAlert('创建家庭', message))
     } finally {
+      busyRef.current = false
       setBusy(null)
     }
   }
 
   /** 加入已有家庭：匿名登录 → 邀请码查家庭 → 绑定 profiles */
   const handleJoin = async () => {
-    if (busy) return
+    if (busyRef.current) return
     if (!inviteCode.trim()) {
       setError('请输入家庭邀请码')
       return
@@ -253,6 +257,7 @@ export default function LoginPage() {
       return
     }
 
+    busyRef.current = true
     setBusy('join')
     setError('')
     let stage = '匿名登录'
@@ -282,6 +287,7 @@ export default function LoginPage() {
       setError(message)
       window.alert(formatAlert('加入家庭', message))
     } finally {
+      busyRef.current = false
       setBusy(null)
     }
   }

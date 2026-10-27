@@ -1,6 +1,7 @@
 import { requireSupabase } from '@/lib/supabase'
 import { resolveFamilyId, type UserRole } from '@/lib/family'
 import { shiftDate, todayStr } from '@/lib/dates'
+import { resolveTaskName } from '@/lib/task-names'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -348,12 +349,12 @@ export async function fetchTotalEarnedStars(): Promise<number> {
 }
 
 /** 写入一条星星奖励并广播 stars-changed 事件（StarBadge 实时刷新） */
-export async function insertStar(amount: number, reason = '完成打卡') {
+export async function insertStar(amount: number, reason = '完成打卡', taskName?: string | null) {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const { error } = await supabase
     .from('star_ledger')
-    .insert({ amount, reason, ...familyPatch(familyId) })
+    .insert({ amount, reason, task_name: taskName ?? null, ...familyPatch(familyId) })
   if (error) {
     console.warn('[Stars] 写入 star_ledger 失败:', error.message)
     return
@@ -452,6 +453,7 @@ export type StarLedgerEntry = {
   id: string
   amount: number
   reason: string
+  task_name: string | null
   created_at: string
 }
 
@@ -460,7 +462,7 @@ export async function fetchRedemptionRecords(limit = 20): Promise<StarLedgerEntr
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const { data, error } = await scoped(
-    supabase.from('star_ledger').select('id, amount, reason, created_at'),
+    supabase.from('star_ledger').select('id, amount, reason, task_name, created_at'),
     familyId,
   )
     .lt('amount', 0)
@@ -468,6 +470,24 @@ export async function fetchRedemptionRecords(limit = 20): Promise<StarLedgerEntr
     .limit(limit)
   if (error) {
     console.warn('[StoreConfig] 读取兑换记录失败:', error.message)
+    return []
+  }
+  return (data ?? []) as StarLedgerEntry[]
+}
+
+/** 星星流水：最近 N 条记录（含获得与消耗），按时间倒序 */
+export async function fetchStarLedger(limit = 50): Promise<StarLedgerEntry[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  if (!familyId) return []
+  const { data, error } = await scoped(
+    supabase.from('star_ledger').select('id, amount, reason, task_name, created_at'),
+    familyId,
+  )
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) {
+    console.warn('[Stats] 读取星星流水失败:', error.message)
     return []
   }
   return (data ?? []) as StarLedgerEntry[]
@@ -492,7 +512,12 @@ export async function redeemReward(reward: RewardItem) {
 
   const { error: ledgerError } = await supabase
     .from('star_ledger')
-    .insert({ amount: -reward.cost_stars, reason: `兑换: ${reward.title}`, ...familyPatch(familyId) })
+    .insert({
+      amount: -reward.cost_stars,
+      reason: `兑换: ${reward.title}`,
+      task_name: reward.title,
+      ...familyPatch(familyId),
+    })
   if (ledgerError) {
     // 回滚库存，避免记账失败后库存被白白扣掉
     await supabase.from('rewards_store').update({ stock: reward.stock }).eq('id', reward.id)
@@ -505,17 +530,20 @@ export async function redeemReward(reward: RewardItem) {
 }
 
 /**
- * 游戏通关后打卡：写入 checkins（task_id + 当天日期），成功后发星星（默认 1 颗）。
- * 所有游戏的打卡统一走这里，Boss 关等场景可通过 stars 传 3。
+ * 游戏通关后打卡：写入 checkins（status = pending，待家长审核），不直接发星星。
+ * stars 为家长确认后应发放的星星数（默认 1 颗），Boss 关等场景可通过 stars 传 3。
  */
 export async function insertCheckin(taskId: string, checkinDate: string, stars = 1) {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
-  const { error } = await supabase
-    .from('checkins')
-    .upsert({ task_id: taskId, checkin_date: checkinDate, ...familyPatch(familyId) })
+  const { error } = await supabase.from('checkins').upsert({
+    task_id: taskId,
+    checkin_date: checkinDate,
+    status: 'pending',
+    stars,
+    ...familyPatch(familyId),
+  })
   if (error) throw error
-  await insertStar(stars)
 }
 
 /** 今天是否已给该任务打过卡（媒体详情页「线下课打卡」状态用） */
@@ -545,13 +573,43 @@ export async function fetchCheckinDates(days = 90): Promise<string[]> {
   const { data, error } = await scoped(
     supabase.from('checkins').select('checkin_date'),
     familyId,
-  ).gte('checkin_date', sinceStr)
+  )
+    .gte('checkin_date', sinceStr)
+    .neq('status', 'rejected')
 
   if (error) {
     console.warn('[Stats] 读取 checkins 失败:', error.message)
     return []
   }
   return (data ?? []).map((r) => String(r.checkin_date)).filter(Boolean)
+}
+
+/** 打卡记录 + task_id：用于统计页按具体任务筛选日历 */
+export async function fetchCheckinTaskRecords(
+  days = 90,
+): Promise<{ date: string; taskId: string | null }[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  if (!familyId) return []
+
+  const sinceStr = shiftDate(todayStr(), -days)
+  const { data, error } = await scoped(
+    supabase.from('checkins').select('checkin_date, task_id'),
+    familyId,
+  )
+    .gte('checkin_date', sinceStr)
+    .neq('status', 'rejected')
+    .order('checkin_date', { ascending: true })
+
+  if (error) {
+    console.warn('[Stats] 读取打卡任务记录失败:', error.message)
+    return []
+  }
+
+  return (data ?? []).map((row) => ({
+    date: String(row.checkin_date ?? ''),
+    taskId: row.task_id ? String(row.task_id) : null,
+  }))
 }
 
 /** 学科打卡分布：返回每个学科的打卡次数（含学科名与颜色） */
@@ -619,6 +677,140 @@ export async function fetchRecentCheckins(limit = 10): Promise<
       createdAt: String(r.created_at ?? ''),
     }
   })
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 打卡审核（家长端）：待审核列表 / 通过 / 驳回 / 待办数量
+// ──────────────────────────────────────────────────────────────────────────────
+
+export type PendingCheckinItem = {
+  id: string
+  taskId: string | null
+  taskTitle: string
+  subjectName: string | null
+  checkinDate: string
+  createdAt: string
+  /** 审核通过后应发放的星星数（打卡时已算好，含连续 5 天奖励） */
+  stars: number
+}
+
+function notifyCheckinsChanged() {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('checkins-changed'))
+}
+
+/** 家长端待审核打卡列表：按提交时间正序，先来先审 */
+export async function fetchPendingCheckins(): Promise<PendingCheckinItem[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  if (!familyId) return []
+
+  const { data, error } = await scoped(
+    supabase.from('checkins').select(
+      `id, task_id, checkin_date, created_at, stars,
+       tasks ( title, subjects ( name ) )`,
+    ),
+    familyId,
+  )
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+
+  if (error) {
+    console.warn('[Approvals] 读取待审核打卡失败:', error.message)
+    return []
+  }
+
+  return (data ?? []).map((row) => {
+    const tasks = Array.isArray(row?.tasks) ? row.tasks[0] : row?.tasks
+    const subjects = Array.isArray(tasks?.subjects) ? tasks.subjects[0] : tasks?.subjects
+    const taskId = row.task_id ? String(row.task_id) : null
+    return {
+      id: String(row.id),
+      taskId,
+      taskTitle: resolveTaskName(taskId, tasks?.title),
+      subjectName: subjects?.name ?? null,
+      checkinDate: String(row.checkin_date ?? ''),
+      createdAt: String(row.created_at ?? ''),
+      stars: typeof row.stars === 'number' ? row.stars : 1,
+    }
+  })
+}
+
+/** 待审核数量（侧边栏红点） */
+export async function fetchPendingCheckinCount(): Promise<number> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  if (!familyId) return 0
+  const { count, error } = await supabase
+    .from('checkins')
+    .select('id', { count: 'exact', head: true })
+    .eq('family_id', familyId)
+    .eq('status', 'pending')
+  if (error) {
+    console.warn('[Approvals] 读取待审核数量失败:', error.message)
+    return 0
+  }
+  return count ?? 0
+}
+
+/**
+ * 家长确认打卡：checkins → approved，并写入 star_ledger 发放星星。
+ * 使用 status = pending 作为条件更新，天然幂等，重复点击不会重复发星。
+ * taskName 写入 star_ledger.task_name，供星星流水显示具体任务名。
+ * @returns 实际发放的星星数（记录已被处理或星星为 0 时返回 0）
+ */
+export async function approveCheckin(checkinId: string, taskName?: string | null): Promise<number> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+
+  const { data, error } = await supabase
+    .from('checkins')
+    .update({ status: 'approved', reviewed_at: new Date().toISOString() })
+    .eq('id', checkinId)
+    .eq('family_id', familyId)
+    .eq('status', 'pending')
+    .select('id, stars')
+
+  if (error) throw error
+  const row = data?.[0]
+  if (!row) return 0
+
+  const amount = typeof row.stars === 'number' && row.stars > 0 ? row.stars : 0
+  if (amount > 0) {
+    const { error: ledgerError } = await supabase
+      .from('star_ledger')
+      .insert({
+        amount,
+        reason: '打卡审核通过',
+        task_name: taskName ?? null,
+        ...familyPatch(familyId),
+      })
+    // 发星失败时回滚审核状态，避免出现「已通过但没给星」
+    if (ledgerError) {
+      await supabase
+        .from('checkins')
+        .update({ status: 'pending', reviewed_at: null })
+        .eq('id', checkinId)
+      throw ledgerError
+    }
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('stars-changed'))
+  }
+
+  notifyCheckinsChanged()
+  return amount
+}
+
+/** 家长驳回打卡：checkins → rejected，不发放星星 */
+export async function rejectCheckin(checkinId: string): Promise<void> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { error } = await supabase
+    .from('checkins')
+    .update({ status: 'rejected', reviewed_at: new Date().toISOString() })
+    .eq('id', checkinId)
+    .eq('family_id', familyId)
+    .eq('status', 'pending')
+  if (error) throw error
+  notifyCheckinsChanged()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1238,7 +1430,7 @@ export type FamilyMember = {
   created_at: string
 }
 
-/** 当前家庭的全部成员 */
+/** 当前家庭的全部成员（按 id 去重，同一角色的历史匿名账号只保留最新一条） */
 export async function fetchFamilyMembers(): Promise<FamilyMember[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
@@ -1249,7 +1441,18 @@ export async function fetchFamilyMembers(): Promise<FamilyMember[]> {
     .eq('family_id', familyId)
     .order('created_at', { ascending: true })
   if (error) throw error
-  return (data ?? []) as FamilyMember[]
+
+  // 双重保险：匿名登录每次会生成新的 user id，同一家庭同一角色可能残留多条，
+  // 列表里按 id 去重后再按「角色 + 昵称」收敛，只展示最新的一条，避免出现多个「妈妈」。
+  const byId = new Map<string, FamilyMember>()
+  for (const row of (data ?? []) as FamilyMember[]) {
+    if (!byId.has(row.id)) byId.set(row.id, row)
+  }
+  const byRole = new Map<string, FamilyMember>()
+  for (const member of byId.values()) {
+    byRole.set(`${member.role}|${member.display_name ?? ''}`, member)
+  }
+  return Array.from(byRole.values()).sort((a, b) => a.created_at.localeCompare(b.created_at))
 }
 
 /** 新家庭默认带上的学科，避免新建后底部 Tab 空白 */

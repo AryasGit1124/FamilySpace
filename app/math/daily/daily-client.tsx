@@ -170,8 +170,13 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
   const [qIndex, setQIndex] = useState(0)
   const [question, setQuestion] = useState<Question | null>(null)
   const [totalFirstTryCorrect, setTotalFirstTryCorrect] = useState(0)
-  /** 当前题已点错的选项 key */
-  const [wrongKeys, setWrongKeys] = useState<Set<string>>(new Set())
+  /** 当前选中的选项 key（点对后保持绿色） */
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  /** 当前点错的选项 key（红色抖动 800ms 后自动清除） */
+  const [wrongKey, setWrongKey] = useState<string | null>(null)
+  /** 本题是否已经点错过（用于首答正确率统计，不随红色状态清除） */
+  const hasTriedRef = useRef(false)
+  const wrongTimerRef = useRef<number | null>(null)
   const [locked, setLocked] = useState(false)
   /** 比大小：选对后填入表达式的符号（null = 还没答对） */
   const [filledSymbol, setFilledSymbol] = useState<string | null>(null)
@@ -189,7 +194,14 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
   useEffect(() => {
     if (stepIndex < STEP_LABELS.length) {
       setQuestion(makeQuestion(STEP_LABELS[stepIndex], maxNumber))
-      setWrongKeys(new Set())
+      // 新题一律清空选中/错误反馈，按钮恢复白底灰边
+      setSelectedKey(null)
+      setWrongKey(null)
+      hasTriedRef.current = false
+      if (wrongTimerRef.current !== null) {
+        window.clearTimeout(wrongTimerRef.current)
+        wrongTimerRef.current = null
+      }
       setLocked(false)
       setFilledSymbol(null)
     }
@@ -210,8 +222,14 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
     }
   }, [question, stepIndex])
 
-  // 卸载清理
-  useEffect(() => () => stopSpeak(), [])
+  // 卸载清理：停语音 + 清掉错误的红色反馈定时器
+  useEffect(
+    () => () => {
+      stopSpeak()
+      if (wrongTimerRef.current !== null) window.clearTimeout(wrongTimerRef.current)
+    },
+    [],
+  )
 
   const advance = useCallback(() => {
     if (qIndex + 1 < QUESTIONS_PER_STEP) {
@@ -222,11 +240,18 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
     }
   }, [qIndex])
 
-  /** 统一点选逻辑：首答对计分；点错抖动可重选；点对等语音播完再进下一题 */
+  /** 统一点选逻辑：点错红色抖动 800ms 后可重选；点对保持绿色，语音播完再进下一题 */
   const pick = async (key: string, isCorrect: boolean) => {
-    if (locked || wrongKeys.has(key)) return
+    if (locked) return
     if (isCorrect) {
-      if (wrongKeys.size === 0) setTotalFirstTryCorrect((n) => n + 1)
+      if (!hasTriedRef.current) setTotalFirstTryCorrect((n) => n + 1)
+      hasTriedRef.current = true
+      if (wrongTimerRef.current !== null) {
+        window.clearTimeout(wrongTimerRef.current)
+        wrongTimerRef.current = null
+      }
+      setWrongKey(null)
+      setSelectedKey(key)
       setLocked(true)
       stopSpeak()
       if (question?.kind === '比大小') {
@@ -239,7 +264,14 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
       }
       advance()
     } else {
-      setWrongKeys((prev) => new Set(prev).add(key))
+      // 答错：当前按钮立即变红并抖动，800ms 后恢复白底，允许继续尝试
+      hasTriedRef.current = true
+      setWrongKey(key)
+      if (wrongTimerRef.current !== null) window.clearTimeout(wrongTimerRef.current)
+      wrongTimerRef.current = window.setTimeout(() => {
+        setWrongKey(null)
+        wrongTimerRef.current = null
+      }, 800)
     }
   }
 
@@ -258,12 +290,18 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
     }
   }
 
-  const optionBtnClass = (key: string, extra?: string) =>
-    cn(
-      'flex items-center justify-center rounded-2xl border-2 bg-card font-bold transition-all hover:bg-muted/50 disabled:cursor-not-allowed',
-      wrongKeys.has(key) && 'math-shake border-destructive bg-destructive/10 text-destructive opacity-50',
+  /** 选项按钮样式：与语文识字「找一找」完全一致的选中态（tailwind-merge 保证覆盖） */
+  const optionBtnClass = (key: string, extra?: string) => {
+    const isSelected = selectedKey === key
+    const isWrong = wrongKey === key
+    return cn(
+      'flex items-center justify-center rounded-2xl border-2 border-gray-200 bg-white font-bold text-foreground transition-all disabled:cursor-not-allowed',
       extra,
+      !isSelected && !isWrong && 'hover:bg-muted/50',
+      isSelected && 'border-emerald-500 bg-emerald-100 text-emerald-700',
+      isWrong && 'math-shake border-destructive bg-destructive/10 text-destructive',
     )
+  }
 
   return (
     <div className="mx-auto flex h-[calc(100dvh-10rem)] w-full max-w-5xl flex-col overflow-hidden px-3 pb-2">
@@ -294,7 +332,7 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
             {earnedStars !== null ? (
               <div className="flex w-full flex-col items-center gap-3 rounded-2xl bg-emerald-50 p-4">
                 <p className="text-base font-bold text-emerald-800">
-                  今日闯关完成！首答正确 {totalFirstTryCorrect}/{TOTAL_QUESTIONS} 题，获得 {earnedStars} 颗星星⭐
+                  打卡成功！等待家长确认后，就能获得 {earnedStars} 颗星星啦 ⭐
                 </p>
                 {isParent && <p className="text-xs text-muted-foreground">（家长测试模式：未实际写入打卡和星星）</p>}
                 <Button className="h-12 w-full text-base" onClick={() => router.push('/')}>
@@ -348,7 +386,7 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
                   <button
                     key={n}
                     type="button"
-                    disabled={locked || wrongKeys.has(String(n))}
+                    disabled={locked || selectedKey === String(n)}
                     onClick={() => pick(String(n), n === question.count)}
                     className={optionBtnClass(String(n), 'h-16 text-4xl md:h-20 md:text-5xl')}
                   >
@@ -371,7 +409,7 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
                     <button
                       key={i}
                       type="button"
-                      disabled={locked || wrongKeys.has(String(i))}
+                      disabled={locked || selectedKey === String(i)}
                       onClick={() => pick(String(i), box.count === question.target)}
                       aria-label={`第 ${i + 1} 个图框`}
                       className={optionBtnClass(
@@ -438,7 +476,7 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
                   <button
                     key={sym}
                     type="button"
-                    disabled={locked || wrongKeys.has(sym)}
+                    disabled={locked || selectedKey === sym}
                     onClick={() =>
                       pick(
                         sym,
@@ -502,7 +540,7 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
                   <button
                     key={n}
                     type="button"
-                    disabled={locked || wrongKeys.has(String(n))}
+                    disabled={locked || selectedKey === String(n)}
                     onClick={() => pick(String(n), n === question.answer)}
                     className={optionBtnClass(String(n), 'h-16 text-4xl md:h-20 md:text-5xl')}
                   >

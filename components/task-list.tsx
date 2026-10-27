@@ -10,6 +10,8 @@ import { useAuth } from '@/components/auth-provider'
 import type { CheckInTask } from '@/lib/mock-data'
 import { cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
+import { familyPatch } from '@/lib/supabase-queries'
+import { resolveFamilyId } from '@/lib/family'
 import { todayDateKey } from '@/lib/supabase-adapter'
 import { handleTeacherCheckin } from '@/lib/rewards'
 
@@ -76,15 +78,14 @@ export function TaskList({
       const key = dateKey ?? todayDateKey()
       const testPrefix = isParent ? '【测试模式】' : ''
 
-      // Teacher 课程打卡：走统一结算（基础 2 星 + 连续 5 天额外 3 星）
+      // Teacher 课程打卡：提交待审核记录（家长确认后才发星）
       if (willDo && task.format === 'teacher') {
-        const { earned, isStreakBonus } = await handleTeacherCheckin(taskId, user?.id ?? '', isParent)
+        const { earned } = await handleTeacherCheckin(taskId, user?.id ?? '', isParent)
         if (earned > 0) {
-          if (isStreakBonus) {
-            window.alert(`${testPrefix}太棒了！连续打卡 5 天，额外获得 3 颗星星⭐⭐⭐！`)
-          } else {
-            window.alert(`${testPrefix}打卡成功！获得 2 颗星星⭐`)
-          }
+          window.alert(
+            `${testPrefix}打卡成功！等待家长确认后，就能获得 ${earned} 颗星星啦 ⭐`,
+          )
+          window.dispatchEvent(new Event('checkins-changed'))
         }
         return
       }
@@ -100,9 +101,17 @@ export function TaskList({
       }
 
       if (willDo) {
-        // 自学类打卡：插入 checkins
-        const { error } = await supabase.from('checkins').upsert({ task_id: taskId, checkin_date: key })
+        // 自学类打卡：插入待审核记录，家长确认后才发星
+        const familyId = await resolveFamilyId()
+        const { error } = await supabase.from('checkins').upsert({
+          task_id: taskId,
+          checkin_date: key,
+          status: 'pending',
+          stars: 1,
+          ...familyPatch(familyId),
+        })
         if (error) throw error
+        window.dispatchEvent(new Event('checkins-changed'))
       } else {
         // 取消打卡：删除
         const { error } = await supabase
@@ -111,6 +120,7 @@ export function TaskList({
           .eq('task_id', taskId)
           .eq('checkin_date', key)
         if (error) throw error
+        window.dispatchEvent(new Event('checkins-changed'))
       }
     } catch (err) {
       console.error('[TaskList] checkins 写入失败，回滚 UI:', err)

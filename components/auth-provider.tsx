@@ -125,7 +125,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     // 孩子端不允许通过 URL 进入管理页面（资料库允许，老师布置的任务要看）
-    const isAdminPath = pathname.startsWith('/settings') || pathname.startsWith('/upload')
+    const isAdminPath =
+      pathname.startsWith('/settings') || pathname.startsWith('/upload') || pathname.startsWith('/parent')
     if (user && profile?.role === 'child' && isAdminPath) {
       router.replace('/')
     }

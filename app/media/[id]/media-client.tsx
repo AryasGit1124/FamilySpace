@@ -82,7 +82,7 @@ export function MediaClient({ media }: { media: MediaRow }) {
     }
   }, [courseTaskId])
 
-  /** 线下课打卡：写 checkins + star_ledger（含连续 5 天额外奖励），成功后把资料标记为已带学 */
+  /** 线下课打卡：写入待审核 checkins，家长确认后才发放星星 */
   const handleCheckin = async () => {
     if (!courseTaskId || checkedIn || checkingIn) return
     setCheckingIn(true)
@@ -90,6 +90,7 @@ export function MediaClient({ media }: { media: MediaRow }) {
     try {
       const { earned, isStreakBonus } = await handleTeacherCheckin(courseTaskId, '')
       setCheckedIn(true)
+      window.dispatchEvent(new Event('checkins-changed'))
       // 打卡即视为已完成学习：同步标记「已带学」，资料库和孩子端都能看到
       try {
         await updateMediaTeaching(media.id, { teaching_status: 'learned' })
@@ -99,7 +100,9 @@ export function MediaClient({ media }: { media: MediaRow }) {
       }
       setCheckFeedback(
         earned > 0
-          ? `打卡成功！获得 ${earned} 颗星星⭐${isStreakBonus ? '（连续 5 天额外 +3 颗）' : ''}`
+          ? `打卡成功！等待家长确认后，就能获得 ${earned} 颗星星啦 ⭐${
+              isStreakBonus ? '（已包含连续 5 天奖励）' : ''
+            }`
           : '今天已经打过卡啦，明天继续加油',
       )
     } catch (err) {
