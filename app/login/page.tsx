@@ -163,7 +163,7 @@ export default function LoginPage() {
   const router = useRouter()
   const { refreshProfile } = useAuth()
   const [selectedRole, setSelectedRole] = useState<FamilyRoleLabel>('妈妈')
-  const [inviteCode, setInviteCode] = useState('')
+  const [inviteCode, setInviteCode] = useState('LUT4ZQ')
   const [busy, setBusy] = useState<Mode | null>(null)
   const [error, setError] = useState('')
   const [fromLink, setFromLink] = useState(false)

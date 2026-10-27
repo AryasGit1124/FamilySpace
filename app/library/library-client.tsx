@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { AlertCircle, CalendarDays, CheckCircle2, Play, Trash2, User, Video, X } from 'lucide-react'
+import { AlertCircle, CalendarDays, CheckCircle2, Play, Trash2, User, X } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/components/auth-provider'
@@ -275,9 +275,15 @@ export default function LibraryPage() {
                               className="h-40 w-full object-cover"
                             />
                           ) : (
-                            <div className="flex h-40 w-full items-center justify-center bg-slate-800 text-white/60">
-                              <Video className="size-8" aria-hidden="true" />
-                            </div>
+                            // 没有封面时降级用 video 首帧（preload=metadata），中间覆盖播放图标
+                            <video
+                              src={item.file_url}
+                              preload="metadata"
+                              muted
+                              playsInline
+                              aria-label={`${item.course_name?.trim() || '未分类'} ${item.media_date}`}
+                              className="h-40 w-full bg-slate-800 object-cover"
+                            />
                           )}
 
                           {item.file_type === 'video' && (
