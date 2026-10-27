@@ -629,6 +629,10 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     setListening(false)
     setActiveSentence(-1)
     listenTokenRef.current += 1
+    // 重置结算状态：否则二次进入 Step 4 时 earnedStars 仍非 null，
+    // 会把「听故事 / 重新播放 / 完成打卡」整条操作栏一起隐藏
+    setEarnedStars(null)
+    setCheckingIn(false)
     setStoryTopic('')
     setCustomTopic('')
     storyRequestedRef.current = false
@@ -1134,49 +1138,41 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                   ))}
                 </div>
 
-                {/* 紧凑操作条：放在卡片内部底边，不再占用页面底部空间 */}
-                {earnedStars === null && (
-                  <div className="flex w-full shrink-0 items-center gap-2">
-                    {!storyListened ? (
-                      <>
-                        <Button
-                          variant="outline"
-                          className="flex-1 py-2 text-sm md:text-base"
-                          onClick={listenStory}
-                        >
-                          <Volume2 className="size-4" aria-hidden="true" />
-                          {listening ? '朗读中…' : '开始听故事'}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          className="flex-1 py-2 text-sm md:text-base"
-                          onClick={markStoryRead}
-                        >
-                          我读完了
-                        </Button>
-                      </>
-                    ) : (
-                      <>
-                        <Button
-                          variant="outline"
-                          className="flex-1 py-2 text-sm md:text-base"
-                          onClick={listenStory}
-                        >
-                          <Volume2 className="size-4" aria-hidden="true" />
-                          {listening ? '朗读中…' : '重新播放'}
-                        </Button>
-                        <Button
-                          className="flex-1 py-2 text-sm md:text-base"
-                          onClick={handleCheckin}
-                          disabled={checkingIn}
-                        >
-                          <CheckCircle2 className="size-4" aria-hidden="true" />
-                          {checkingIn ? '打卡中…' : '完成打卡'}
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                )}
+                {/* 紧凑操作条：听故事/重新播放常驻（打卡后也能反复听）；
+                    仅「我读完了 / 完成打卡 / 今日已打卡」随进度与打卡状态切换 */}
+                <div className="flex w-full shrink-0 items-center gap-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1 py-2 text-sm md:text-base"
+                    onClick={listenStory}
+                  >
+                    <Volume2 className="size-4" aria-hidden="true" />
+                    {listening ? '朗读中…' : storyListened ? '重新播放' : '开始听故事'}
+                  </Button>
+                  {earnedStars !== null ? (
+                    <span className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-emerald-50 py-2 text-sm font-semibold text-emerald-700 md:text-base">
+                      <CheckCircle2 className="size-4" aria-hidden="true" />
+                      今日已打卡
+                    </span>
+                  ) : storyListened ? (
+                    <Button
+                      className="flex-1 py-2 text-sm md:text-base"
+                      onClick={handleCheckin}
+                      disabled={checkingIn}
+                    >
+                      <CheckCircle2 className="size-4" aria-hidden="true" />
+                      {checkingIn ? '打卡中…' : '完成打卡'}
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      className="flex-1 py-2 text-sm md:text-base"
+                      onClick={markStoryRead}
+                    >
+                      我读完了
+                    </Button>
+                  )}
+                </div>
               </>
             ) : null}
 
