@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import * as tus from 'tus-js-client'
 import { AlertCircle, CheckCircle2, UploadCloud, X } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
@@ -16,24 +15,6 @@ import { supabase } from '@/lib/supabase'
 
 const MAX_SIZE = 100 * 1024 * 1024 // 100MB
 const ACCEPT = 'video/*,image/*'
-const BUCKET = 'course-media'
-const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? ''
-/** 直连存储域名：<项目ID>.storage.supabase.co，比走通用域名更快 */
-const STORAGE_BASE = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').replace('.supabase.co', '.storage.supabase.co')
-/** TUS 分片大小：6MB（Supabase 推荐值） */
-const TUS_CHUNK_SIZE = 6 * 1024 * 1024
-/** 无任何传输进展超过该时长视为连接卡死（跨境弱网常见：TCP 半死不活，不报错也不传数据） */
-const STALL_TIMEOUT_MS = 15_000
-/** 卡死后自动断点续传的最大次数（每次续传都从服务器已收到的 offset 继续，不会重传） */
-const MAX_STALL_RESTARTS = 10
-
-/** 看门狗识别到连接停滞时抛出的内部错误，用于触发断点续传重试 */
-class StallError extends Error {
-  constructor() {
-    super('传输停滞，自动断点续传')
-    this.name = 'StallError'
-  }
-}
 
 type CourseOption = { id: string; name: string }
 type OfflineOption = { value: string; day: number }
@@ -93,14 +74,23 @@ function errMsg(err: unknown): string {
 
 /**
  * 判断某个文件名是否已上传过。
- * 存储路径为 `<日期>/<时间戳>-<文件名>`，所以用后缀匹配即可；
- * 已上传的文件不允许再次上传，避免重复资料。
+ * R2 存储键为 `<时间戳>_<URL 编码后的文件名>`，旧数据为 `<日期>/<时间戳>-<文件名>`，
+ * 这里统一取路径末段、解码后剥掉时间戳前缀再做比较。
  */
 function findDuplicateFile(rows: MediaRow[], fileName: string) {
-  const safeName = fileName.replace(/[^\w.-]/g, '_')
+  const normalize = (name: string) => name.replace(/[^\w.-]/g, '_').toLowerCase()
+  const target = normalize(fileName)
   return rows.find((r) => {
     const clean = r.file_url.split('?')[0]
-    return clean.endsWith(`-${safeName}`) || clean.endsWith(`/${safeName}`)
+    const rawBase = clean.slice(clean.lastIndexOf('/') + 1)
+    let base = rawBase
+    try {
+      base = decodeURIComponent(rawBase)
+    } catch {
+      // 非法编码时直接用原始末段
+    }
+    const stripped = base.replace(/^\d+[-_]/, '')
+    return normalize(stripped) === target
   })
 }
 
@@ -173,7 +163,7 @@ function makeFallbackCover(file: File): Promise<File> {
   return canvasToCoverFile(canvas, coverFileName(file))
 }
 
-/** 判断画面是否接近全黑（抽样中心 32×32 区域的平均亮度） */
+/** 判断画面是否接近全黑（抽样中心 32×32 区域的平均亮度）；取样异常时按全黑处理，走兜底封面 */
 function isNearlyBlack(ctx: CanvasRenderingContext2D, width: number, height: number): boolean {
   try {
     const sampleSize = Math.min(32, width, height)
@@ -185,12 +175,13 @@ function isNearlyBlack(ctx: CanvasRenderingContext2D, width: number, height: num
       sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
     }
     return sum / (sampleSize * sampleSize) < 12
-  } catch {
-    return false
+  } catch (err) {
+    console.warn('[UploadPage] 画面像素检测失败，按全黑处理:', err)
+    return true
   }
 }
 
-/** 真正从视频第 1 秒抽帧，失败或全黑返回 null（由上层走文字封面兜底） */
+/** 从视频第 0.5 秒抽帧（适配竖屏），失败/全黑/过小返回 null（由上层走文字封面兜底） */
 async function extractVideoFrame(file: File): Promise<File | null> {
   const url = URL.createObjectURL(file)
   const video = document.createElement('video')
@@ -201,54 +192,56 @@ async function extractVideoFrame(file: File): Promise<File | null> {
     video.preload = 'auto'
     video.src = url
 
-    // 1. loadeddata：此时首帧数据已经可用
-    await new Promise<void>((resolve, reject) => {
-      const timer = window.setTimeout(() => reject(new Error('读取视频画面超时')), 6000)
-      video.onloadeddata = () => {
-        window.clearTimeout(timer)
-        resolve()
+    // 1. loadedmetadata：此时可以拿到真实宽高（竖屏视频必须是 1080×1920 这类原生尺寸）
+    const { width, height } = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+      video.onloadedmetadata = () => {
+        // HEVC 等无法解码的编码，浏览器给不出尺寸
+        if (!video.videoWidth || !video.videoHeight) {
+          reject(new Error('当前浏览器无法解码视频画面'))
+          return
+        }
+        resolve({ width: video.videoWidth, height: video.videoHeight })
       }
-      video.onerror = () => {
-        window.clearTimeout(timer)
-        reject(new Error('视频解码失败'))
-      }
+      video.onerror = () => reject(new Error('视频解码失败'))
     })
 
-    // 有画面才能抽帧；HEVC 在不解码的浏览器里 videoWidth 为 0
-    if (!video.videoWidth || !video.videoHeight) throw new Error('当前浏览器无法解码视频画面')
-
-    // 2. 跳到第 1 秒（第 0.1 秒经常还是黑帧；短视频退化为中间位置）
+    // 2. seek 到第 0.5 秒；不足 1 秒的短视频取其一半，避免越界导致 seeked 永不触发
     const duration = Number.isFinite(video.duration) ? video.duration : 0
-    video.currentTime = duration > 1.2 ? 1 : Math.max(0, duration / 2)
+    const seekTime = duration > 0 && duration < 1 ? duration / 2 : 0.5
+    console.log(`[UploadPage] 截帧时间点 ${seekTime}s（总时长 ${duration.toFixed(2)}s，尺寸 ${width}×${height}）`)
     await new Promise<void>((resolve, reject) => {
-      const timer = window.setTimeout(() => reject(new Error('跳转视频帧超时')), 6000)
-      video.onseeked = () => {
-        window.clearTimeout(timer)
-        resolve()
-      }
+      video.onseeked = () => resolve()
+      video.onerror = () => reject(new Error('跳转视频帧失败'))
+      video.currentTime = seekTime
     })
 
-    // 3. seeked 后再等 100ms，给浏览器时间把画面真正渲染出来
-    await new Promise((resolve) => window.setTimeout(resolve, 100))
+    // seeked 表示画面已完成跳转，等一帧让合成器真正绘制上去
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 
-    // 4. 绘制到 Canvas 并转成 JPEG 文件
+    // 3. Canvas 宽高严格等于视频原生宽高，竖屏不变形、不裁切
     const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    if (!canvas.width || !canvas.height) throw new Error('封面尺寸为 0')
+    canvas.width = width
+    canvas.height = height
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Canvas 不可用')
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    ctx.drawImage(video, 0, 0, width, height)
 
-    if (isNearlyBlack(ctx, canvas.width, canvas.height)) throw new Error('抽到的是全黑画面')
+    // 纯黑画面同样走兜底，避免把黑图当封面
+    if (isNearlyBlack(ctx, width, height)) throw new Error('抽到的是全黑画面')
 
-    const cover = await canvasToCoverFile(canvas, coverFileName(file))
-    if (!cover.size) throw new Error('封面导出为空')
-    return cover
+    // 4. 导出 JPEG Blob（质量 0.8）
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.8))
+    if (!blob) throw new Error('封面导出为空')
+    console.log('截取的封面 Blob 大小:', blob.size)
+    // 小于 1KB 基本就是纯色图
+    if (blob.size < 1024) throw new Error('封面图片过小，疑似纯色图')
+
+    return new File([blob], coverFileName(file), { type: 'image/jpeg' })
   } catch (err) {
     console.warn('[UploadPage] 视频抽帧失败:', err)
     return null
   } finally {
+    // 5. 释放解码资源与 Object URL，防止内存泄漏
     video.src = ''
     video.removeAttribute('src')
     video.load()
@@ -256,18 +249,30 @@ async function extractVideoFrame(file: File): Promise<File | null> {
   }
 }
 
+/** 封面抽帧的硬超时：超过后直接中断，改用文字占位封面，避免卡死上传 */
+const COVER_TIMEOUT_MS = 3000
+
 /**
  * 视频封面提取 —— 必定返回一张图片：
- * 优先抽第 1 秒真实画面；解码失败 / 超时 / 全黑 / 尺寸为 0 时，
- * 自动生成 400×300 蓝色 Canvas 兜底封面，绝不返回 null，绝不卡住上传。
+ * 优先抽第 0.5 秒的真实画面（Canvas 用视频原生宽高，竖屏不变形）；
+ * 解码失败 / 3 秒超时 / 全黑 / 尺寸为 0 时，自动生成文字兜底封面，绝不返回 null、绝不卡住上传。
  */
 async function extractVideoCover(file: File): Promise<File> {
+  let timedOut = false
   const frame = await Promise.race([
     extractVideoFrame(file),
-    new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 8000)),
+    new Promise<null>((resolve) =>
+      window.setTimeout(() => {
+        timedOut = true
+        resolve(null)
+      }, COVER_TIMEOUT_MS),
+    ),
   ])
   if (frame) return frame
-  console.warn('[UploadPage] 未拿到真实画面，使用兜底封面:', file.name)
+  console.warn(
+    `[UploadPage] ${timedOut ? `${COVER_TIMEOUT_MS}ms 内未完成抽帧` : '未拿到真实画面'}，使用兜底封面:`,
+    file.name,
+  )
   return makeFallbackCover(file)
 }
 
@@ -342,111 +347,83 @@ async function compressImage(file: File): Promise<File> {
   }
 }
 
-/**
- * TUS 分片（断点续传）上传。
- * - endpoint 使用直连存储域名 <项目ID>.storage.supabase.co，绕过通用域名的转发层
- * - 单请求失败会按 retryDelays 自动重试，并从已上传的 offset 续传，不会从 0 重来
- * - 每片 6MB（Supabase 推荐值）
- * - 停滞看门狗：跨境弱网下 TCP 连接可能"半死不活"（不报错也不传数据，tus 默认无超时，
- *   会一直等下去，表现为进度卡在 99% 不动）。检测到 STALL_TIMEOUT_MS 无任何进展后
- *   主动中止并重新发起上传，tus 凭 fingerprint 自动从服务器 offset 续传。
- * - 取消/卸载清理：传入 AbortSignal，触发后 abort 当前 tus 实例并抛出 AbortError；
- *   断点（fingerprint）会保留，下次传同一文件可从断点继续。
- */
-async function tusUpload(
-  path: string,
-  file: File,
-  onProgress: (loaded: number, total: number) => void,
-  onStall?: () => void,
+type PresignResponse = { uploadUrl: string; publicUrl: string; key: string }
+
+/** 向后端申请 R2 预签名上传地址（1 小时有效） */
+async function presignUpload(fileName: string, fileType: string): Promise<PresignResponse> {
+  const res = await fetch('/api/r2-upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileName, fileType }),
+  })
+  if (!res.ok) {
+    let message = `获取 R2 上传地址失败（HTTP ${res.status}）`
+    try {
+      const data = (await res.json()) as { error?: string }
+      if (data?.error) message = data.error
+    } catch {
+      // 响应不是 JSON 时沿用默认文案
+    }
+    throw new Error(message)
+  }
+  return (await res.json()) as PresignResponse
+}
+
+/** 用 XHR 把文件直接 PUT 到 R2（带真实进度、支持取消；不经过 Next.js 服务器） */
+function putToR2(
+  uploadUrl: string,
+  file: Blob,
+  onProgress?: (loaded: number, total: number) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  if (!STORAGE_BASE || !ANON_KEY) throw new Error('缺少 Supabase 环境变量')
-
-  const abortError = () => new DOMException('上传已取消', 'AbortError')
-
-  // 有登录态就用 access_token，没有（本项目未启用 Auth）则退回 anon key
-  let token = ANON_KEY
-  try {
-    const { data } = (await supabase?.auth.getSession()) ?? { data: { session: null } }
-    if (data.session?.access_token) token = data.session.access_token
-  } catch (err) {
-    console.warn('[UploadPage] 获取 session 失败，使用 anon key:', err)
-  }
-
-  // 断点续传重新开始时 offset 可能回退（服务器只确认已提交的片），进度条取历史最大值避免倒退
-  let maxLoaded = 0
-
-  for (let attempt = 0; attempt <= MAX_STALL_RESTARTS; attempt++) {
-    if (signal?.aborted) throw abortError()
-    try {
-      await new Promise<void>((resolve, reject) => {
-        let settled = false
-        let lastActivity = Date.now()
-        /** 所有退出路径统一走这里，保证看门狗和 abort 监听都被清理 */
-        const settle = (fn: () => void) => {
-          if (settled) return
-          settled = true
-          clearInterval(watchdog)
-          signal?.removeEventListener('abort', onAbort)
-          fn()
-        }
-
-        const upload = new tus.Upload(file, {
-          endpoint: `${STORAGE_BASE}/storage/v1/upload/resumable`,
-          retryDelays: [0, 3000, 5000, 10000, 20000, 30000],
-          chunkSize: TUS_CHUNK_SIZE,
-          headers: {
-            apikey: ANON_KEY,
-            authorization: `Bearer ${token}`,
-            'x-upsert': 'false',
-          },
-          metadata: {
-            bucketName: BUCKET,
-            objectName: path,
-            contentType: file.type || 'application/octet-stream',
-            cacheControl: '31536000',
-          },
-          removeFingerprintOnSuccess: true,
-          onProgress: (bytesUploaded, bytesTotal) => {
-            lastActivity = Date.now()
-            maxLoaded = Math.max(maxLoaded, bytesUploaded)
-            onProgress(maxLoaded, bytesTotal)
-          },
-          onChunkComplete: () => {
-            lastActivity = Date.now()
-          },
-          onSuccess: () => settle(resolve),
-          onError: (err) => settle(() => reject(err)),
-        })
-
-        const watchdog = setInterval(() => {
-          if (settled || Date.now() - lastActivity <= STALL_TIMEOUT_MS) return
-          // 注意不能 abort(true)：true 会向服务器发 DELETE 终止整个上传任务，断点就丢了
-          upload.abort(false).catch(() => {})
-          settle(() => reject(new StallError()))
-        }, 3000)
-
-        const onAbort = () => {
-          upload.abort(false).catch(() => {})
-          settle(() => reject(abortError()))
-        }
-        signal?.addEventListener('abort', onAbort, { once: true })
-
-        upload.start()
-      })
-      return // 上传成功
-    } catch (err) {
-      if (err instanceof StallError && attempt < MAX_STALL_RESTARTS) {
-        console.warn(`[UploadPage] 传输停滞，第 ${attempt + 1} 次断点续传（已传 ${(maxLoaded / 1024 / 1024).toFixed(1)}MB）`)
-        onStall?.()
-        continue
-      }
-      if (err instanceof StallError) {
-        throw new Error('网络持续中断，已自动续传多次仍未完成，请切换网络（如手机热点/关闭代理）后重试')
-      }
-      throw err
+  return new Promise<void>((resolve, reject) => {
+    const abortError = () => new DOMException('上传已取消', 'AbortError')
+    if (signal?.aborted) {
+      reject(abortError())
+      return
     }
-  }
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', uploadUrl)
+    // 必须与预签名时使用的 ContentType 一致，否则 R2 会返回 SignatureDoesNotMatch
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
+
+    const onAbort = () => xhr.abort()
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.(event.loaded, event.total)
+    }
+    xhr.onload = () => {
+      signal?.removeEventListener('abort', onAbort)
+      if (xhr.status >= 200 && xhr.status < 300) resolve()
+      else reject(new Error(`R2 上传失败（HTTP ${xhr.status}）${xhr.responseText ? `：${xhr.responseText.slice(0, 120)}` : ''}`))
+    }
+    xhr.onerror = () => {
+      signal?.removeEventListener('abort', onAbort)
+      reject(new Error('R2 上传网络错误，请检查 Bucket 的 CORS 是否允许本站点 PUT 请求'))
+    }
+    xhr.onabort = () => {
+      signal?.removeEventListener('abort', onAbort)
+      reject(abortError())
+    }
+
+    signal?.addEventListener('abort', onAbort, { once: true })
+    xhr.send(file)
+  })
+}
+
+/**
+ * 上传单个文件到 Cloudflare R2：申请预签名 → 直传 → 返回可公开访问的 URL。
+ */
+async function uploadToR2(
+  file: File,
+  onProgress?: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) throw new DOMException('上传已取消', 'AbortError')
+  const presign = await presignUpload(file.name, file.type || 'application/octet-stream')
+  await putToR2(presign.uploadUrl, file, onProgress, signal)
+  return presign.publicUrl
 }
 
 export default function UploadPage() {
@@ -458,7 +435,7 @@ export default function UploadPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   /** 已上传资料缓存 —— 用于重复上传检测，提交前会强制刷新 */
   const mediaRef = useRef<MediaRow[] | null>(null)
-  /** 当前上传的中止控制器：取消上传 / 组件卸载时触发，妥善清理 tus 实例 */
+  /** 当前上传的中止控制器：取消上传 / 组件卸载时触发，中断进行中的 R2 PUT */
   const abortRef = useRef<AbortController | null>(null)
 
   const [courses, setCourses] = useState<CourseOption[]>([])
@@ -482,7 +459,7 @@ export default function UploadPage() {
     setMediaDate(preDate || todayDateKey())
   }, [preDate])
 
-  // 组件卸载时中止正在进行的上传，清理 tus 实例与看门狗定时器
+  // 组件卸载时中止正在进行的上传（中断 R2 PUT）
   useEffect(() => {
     return () => {
       abortRef.current?.abort()
@@ -606,7 +583,7 @@ export default function UploadPage() {
 
     // 视频解码探测：HEVC 在 Windows Chrome/Edge 上通常只有声音没有画面，提前提示
     setCodecWarn(false)
-    const firstVideo = accepted.find((f) => f.type.startsWith('video/'))
+    const firstVideo = accepted.find((f) => resolveFileType(f) === 'video')
     if (firstVideo) {
       void probeVideoDecodable(firstVideo).then((ok) => {
         if (!ok) setCodecWarn(true)
@@ -715,6 +692,7 @@ export default function UploadPage() {
         }
 
         const batchLabel = `第 ${index + 1}/${items.length} 个`
+        console.log(`[UploadPage] 开始处理 ${batchLabel}文件：${item.file.name}`)
 
         try {
           // 1. 图片先压缩再上传（视频无法在浏览器端压缩，按原文件上传）
@@ -737,14 +715,11 @@ export default function UploadPage() {
             message: `${batchLabel} · 准备上传…`,
           })
 
-          const safeName = prepared.name.replace(/[^\w.-]/g, '_')
-          const path = `${mediaDate}/${Date.now()}-${safeName}`
-
-          // 3. TUS 分片上传到 course-media 桶（失败自动从断点续传）
+          // 3. 预签名直传 Cloudflare R2（浏览器直接 PUT 到 R2，不经过 Next.js 服务器）
           const startedAt = performance.now()
+          let fileUrl: string
           try {
-            await tusUpload(
-              path,
+            fileUrl = await uploadToR2(
               prepared,
               (loaded, total) => {
                 const elapsed = (performance.now() - startedAt) / 1000
@@ -758,45 +733,46 @@ export default function UploadPage() {
                       : `${batchLabel} · 上传中…`,
                 })
               },
-              () => updateUpload(item.id, { stalling: true }),
               controller.signal,
             )
           } catch (uploadErr) {
             // 用户主动取消/页面已离开：静默结束，不报错
             if (uploadErr instanceof Error && uploadErr.name === 'AbortError') return
-            const raw = uploadErr instanceof Error ? uploadErr.message : String(uploadErr)
-            throw new Error(
-              raw.includes('Bucket not found')
-                ? `存储桶「${BUCKET}」不存在。请到 Supabase Dashboard → Storage 新建一个名为 ${BUCKET} 的 Public 桶。`
-                : raw,
-            )
+            throw new Error(`上传到 R2 失败：${errMsg(uploadErr)}`)
           }
 
-          const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(path)
-          const fileUrl: string | null = urlData?.publicUrl ?? null
-          if (!fileUrl) throw new Error('视频地址获取失败')
-
           // 4. 视频：必定生成封面（真实帧或蓝色兜底图）并上传
+          // 注意用 resolveFileType 判断（MIME 为空的 .mov 也要算视频），否则会漏掉封面
+          const isVideo = resolveFileType(prepared) === 'video'
           let coverUrl: string | null = null
-          if (prepared.type.startsWith('video/')) {
+          if (isVideo) {
             updateUpload(item.id, { percent: 100, message: `${batchLabel} · 正在生成封面…` })
+            console.log(`[UploadPage] 正在生成第 ${index + 1}/${items.length} 个视频封面...`, prepared.name)
 
             const cover = await extractVideoCover(prepared)
-            const coverPath = `${mediaDate}/${Date.now()}-cover-${safeName}.jpg`
+            console.log(
+              `[UploadPage] 第 ${index + 1}/${items.length} 个封面生成成功：${cover.name}（${humanSize(cover.size)}）`,
+            )
+
             try {
-              await tusUpload(coverPath, cover, () => {}, undefined, controller.signal)
+              coverUrl = await uploadToR2(cover, undefined, controller.signal)
             } catch (coverErr) {
               // 用户在封面上传期间点了取消：按取消处理，不再继续写库
               if (coverErr instanceof Error && coverErr.name === 'AbortError') return
-              throw new Error(`封面图片上传失败：${errMsg(coverErr)}`)
+              // 封面上传失败只降级为「无封面」，视频本身照常入库
+              console.error(
+                `[UploadPage] 第 ${index + 1}/${items.length} 个封面上传失败，降级为无封面:`,
+                coverErr,
+              )
+              coverUrl = null
             }
-            coverUrl = supabase.storage.from(BUCKET).getPublicUrl(coverPath).data.publicUrl ?? null
-            if (!coverUrl) throw new Error('封面地址获取失败')
+            console.log(
+              `[UploadPage] 第 ${index + 1}/${items.length} 个封面地址：${coverUrl ?? '（空，已降级）'}`,
+            )
           }
 
           // 5. 视频地址与封面地址都拿到后，才写入 media 表（每个文件一条记录）
           // 注：media 表的封面字段实际名为 thumb_url（并非 cover_url），这里存的就是封面地址
-          if (prepared.type.startsWith('video/') && !coverUrl) throw new Error('视频封面缺失，已跳过写库')
           await insertMedia({
             course_id: courseId, // 课表 tasks 的 id，即这门课本身
             course_name: courseName,
@@ -809,6 +785,9 @@ export default function UploadPage() {
             uploader_name: '妈妈',
             thumb_url: coverUrl,
           })
+          console.log(
+            `[UploadPage] 第 ${index + 1}/${items.length} 个文件入库完成：${prepared.name}（封面：${coverUrl ?? '无'}）`,
+          )
 
           uploadedNames.add(prepared.name)
           successCount += 1

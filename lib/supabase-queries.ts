@@ -1329,15 +1329,44 @@ export async function deleteMedia(id: string) {
   if (error) throw error
 }
 
-/** 从 publicUrl 解析出 Storage 内的路径，并删除该文件 */
-export async function deleteMediaFileByUrl(fileUrl: string) {
-  const supabase = await requireSupabase()
+/**
+ * 删除资料对应的云盘文件（视频/图片 + 封面）。
+ * - 旧版 Supabase Storage 链接（.../object/public/<bucket>/<path>）：走 Storage API
+ * - 新版 Cloudflare R2 链接：调用 /api/r2-delete，由服务端删除文件与封面
+ * 纯文本作业（fileUrl 为空）直接返回；文件删除失败只告警，不影响后续删库记录。
+ */
+export async function deleteMediaAssets(fileUrl: string | null, coverUrl?: string | null) {
+  if (!fileUrl) return
+
   const marker = `/object/public/${MEDIA_BUCKET}/`
-  const idx = fileUrl.indexOf(marker)
-  if (idx < 0) return
-  const path = decodeURIComponent(fileUrl.slice(idx + marker.length).split('?')[0])
-  const { error } = await supabase.storage.from(MEDIA_BUCKET).remove([path])
-  if (error) throw error
+  if (fileUrl.includes(marker)) {
+    const supabase = await requireSupabase()
+    const paths = [fileUrl, coverUrl]
+      .filter((u): u is string => Boolean(u && u.includes(marker)))
+      .map((u) => decodeURIComponent(u.slice(u.indexOf(marker) + marker.length).split('?')[0]))
+    const { error } = await supabase.storage.from(MEDIA_BUCKET).remove(paths)
+    if (error) throw error
+    return
+  }
+
+  try {
+    const res = await fetch('/api/r2-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileUrl, coverUrl: coverUrl ?? '' }),
+    })
+    if (!res.ok) {
+      const data = (await res.json().catch(() => null)) as { error?: string } | null
+      throw new Error(data?.error ?? `R2 删除接口返回 HTTP ${res.status}`)
+    }
+    const data = (await res.json()) as { failed?: { url: string; error: string }[] }
+    if (data.failed?.length) {
+      console.warn('[media] 部分 R2 文件删除失败（数据库记录仍会删除）:', data.failed)
+    }
+  } catch (err) {
+    // 文件本来就不存在 / 网络异常时不要让删除流程卡死
+    console.warn('[media] R2 文件删除失败，仅删除数据库记录:', err)
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

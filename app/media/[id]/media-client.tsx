@@ -1,12 +1,15 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { BookOpenCheck, CheckCircle2, RotateCcw, TriangleAlert } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { BookOpenCheck, CheckCircle2, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/components/auth-provider'
 import { handleTeacherCheckin } from '@/lib/rewards'
 import {
+  deleteMedia,
+  deleteMediaAssets,
   fetchTodayCheckin,
   updateMediaTeaching,
   type MediaRow,
@@ -36,6 +39,7 @@ const STATUS_OPTIONS: { value: TeachingStatus; label: string; icon: typeof BookO
 export function MediaClient({ media }: { media: MediaRow }) {
   const { role } = useAuth()
   const isParent = role === 'parent'
+  const router = useRouter()
 
   const videoRef = useRef<HTMLVideoElement>(null)
   /** 上次写入进度的时间戳，用于 2 秒节流 */
@@ -48,6 +52,7 @@ export function MediaClient({ media }: { media: MediaRow }) {
   const [savedNote, setSavedNote] = useState(media.parent_note ?? '')
   const [savingStatus, setSavingStatus] = useState(false)
   const [savingNote, setSavingNote] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [markFeedback, setMarkFeedback] = useState<string | null>(null)
   /** 当前浏览器无法解码视频画面（HEVC 等）时置 true，展示提示横幅 */
   const [codecIssue, setCodecIssue] = useState(false)
@@ -175,6 +180,22 @@ export function MediaClient({ media }: { media: MediaRow }) {
       setMarkFeedback('备注保存失败，请重试')
     } finally {
       setSavingNote(false)
+    }
+  }
+
+  /** 删除资料：先删 R2 上的文件与封面（失败只告警），再删 media 记录并返回资料库 */
+  const handleDelete = async () => {
+    if (!window.confirm('确定要删除这个资料吗？文件将无法恢复。')) return
+    setDeleting(true)
+    setMarkFeedback(null)
+    try {
+      await deleteMediaAssets(media.file_url, media.thumb_url)
+      await deleteMedia(media.id)
+      router.push('/library')
+    } catch (err) {
+      console.error('[MediaClient] 删除资料失败:', err)
+      setMarkFeedback('删除失败，请重试')
+      setDeleting(false)
     }
   }
 
@@ -331,6 +352,20 @@ export function MediaClient({ media }: { media: MediaRow }) {
                 </Button>
                 {markFeedback && <p className="text-xs text-destructive">{markFeedback}</p>}
               </div>
+            </div>
+
+            {/* 危险操作：物理删除 R2 文件与数据库记录 */}
+            <div className="border-t pt-3">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={deleting}
+                onClick={() => void handleDelete()}
+                className="w-full text-destructive hover:text-destructive"
+              >
+                <Trash2 aria-hidden="true" />
+                {deleting ? '删除中…' : '删除这个资料'}
+              </Button>
             </div>
           </div>
         ) : (

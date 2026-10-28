@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { useAuth } from '@/components/auth-provider'
 import {
   deleteMedia,
-  deleteMediaFileByUrl,
+  deleteMediaAssets,
   fetchMediaList,
   type MediaRow,
 } from '@/lib/supabase-queries'
@@ -114,25 +114,17 @@ export default function LibraryPage() {
     return [...map.entries()]
   }, [filtered])
 
-  /** 删除：先删 Storage 文件，再删 media 记录；任一步失败都保留记录并提示 */
+  /** 删除：先删 R2 上的文件与封面（失败只告警），再删 media 记录并更新列表 */
   const handleDelete = async (item: MediaRow) => {
     const label = `${item.course_name ?? '未分类'} · ${item.media_date}`
-    const ok = window.confirm(`确定删除「${label}」这条资料吗？\n数据库记录和存储文件都会删除，且无法恢复。`)
+    const ok = window.confirm('确定要删除这个资料吗？文件将无法恢复。')
     if (!ok) return
 
     setDeletingId(item.id)
     setNotice(null)
     try {
-      try {
-        await deleteMediaFileByUrl(item.file_url)
-      } catch (err) {
-        console.error('[Library] 删除存储文件失败:', err)
-        setNotice({
-          type: 'error',
-          text: '删除存储文件失败：缺少删除权限。请在 Supabase Storage 给 course-media 桶添加 delete 策略后重试。',
-        })
-        return
-      }
+      // 纯文本作业没有文件，内部会直接跳过；R2 删除失败也不会抛错阻断流程
+      await deleteMediaAssets(item.file_url, item.thumb_url)
       await deleteMedia(item.id)
       setItems((prev) => prev.filter((it) => it.id !== item.id))
       setNotice({ type: 'success', text: `已删除：${label}` })
