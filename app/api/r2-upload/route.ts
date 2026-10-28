@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     )
   }
 
-  let body: { fileName?: unknown; fileType?: unknown } | null = null
+  let body: { fileName?: unknown; fileType?: unknown; subjectName?: unknown } | null = null
   try {
     body = await request.json()
   } catch {
@@ -28,9 +28,11 @@ export async function POST(request: Request) {
   }
   const fileType = typeof body?.fileType === 'string' && body.fileType ? body.fileType : 'application/octet-stream'
 
-  // 文件名可能含中文/空格/斜杠，先去掉路径分隔符再生成 Key
-  const safeName = rawName.replace(/[/\\]/g, '_').trim()
-  const fileKey = `${Date.now()}_${safeName}`
+  // 文件名可能含中文/空格/斜杠，去掉路径分隔符与特殊字符后再生成 Key
+  const safeName = rawName.replace(/[/\\:*?"<>|#%\s]+/g, '_').trim()
+  // 按「学科(课程) / 年月」分目录：英语/2026-10/1723456789_reading.mp4
+  const subject = sanitizeSegment(typeof body?.subjectName === 'string' ? body.subjectName : '') || '未分类'
+  const fileKey = `${subject}/${currentMonth()}/${Date.now()}_${safeName}`
 
   const uploadUrl = presignR2Url({
     accountId: accountId!,
@@ -45,7 +47,28 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     uploadUrl,
-    publicUrl: `${publicBase}/${uriEncode(fileKey)}`,
+    publicUrl: `${publicBase}/${fileKey.split('/').map(uriEncode).join('/')}`,
     key: fileKey,
   })
+}
+
+/** 目录名清洗：去掉空格与 URL 特殊字符，保留中文/字母/数字/连字符 */
+function sanitizeSegment(value: string): string {
+  return value
+    .replace(/[/\\:*?"<>|#%]+/g, ' ') // 路径与 URL 保留字符
+    .replace(/\s+/g, '-') // 空格换连字符
+    .replace(/^[-.]+|[-.]+$/g, '') // 去掉首尾的连字符/点
+    .slice(0, 40)
+}
+
+/** 北京时间当月，形如 2026-10 */
+function currentMonth(): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(new Date())
+  const year = parts.find((p) => p.type === 'year')?.value ?? ''
+  const month = parts.find((p) => p.type === 'month')?.value ?? ''
+  return `${year}-${month}`
 }

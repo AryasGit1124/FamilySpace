@@ -400,12 +400,12 @@ async function compressImage(file: File): Promise<File> {
 
 type PresignResponse = { uploadUrl: string; publicUrl: string; key: string }
 
-/** 向后端申请 R2 预签名上传地址（1 小时有效） */
-async function presignUpload(fileName: string, fileType: string): Promise<PresignResponse> {
+/** 向后端申请 R2 预签名上传地址（1 小时有效）；subjectName 决定 R2 里的「课程/年月」目录 */
+async function presignUpload(fileName: string, fileType: string, subjectName: string): Promise<PresignResponse> {
   const res = await fetch('/api/r2-upload', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileName, fileType }),
+    body: JSON.stringify({ fileName, fileType, subjectName }),
   })
   if (!res.ok) {
     let message = `获取 R2 上传地址失败（HTTP ${res.status}）`
@@ -468,11 +468,12 @@ function putToR2(
  */
 async function uploadToR2(
   file: File,
+  subjectName: string,
   onProgress?: (loaded: number, total: number) => void,
   signal?: AbortSignal,
 ): Promise<string> {
   if (signal?.aborted) throw new DOMException('上传已取消', 'AbortError')
-  const presign = await presignUpload(file.name, file.type || 'application/octet-stream')
+  const presign = await presignUpload(file.name, file.type || 'application/octet-stream', subjectName)
   await putToR2(presign.uploadUrl, file, onProgress, signal)
   return presign.publicUrl
 }
@@ -772,6 +773,7 @@ export default function UploadPage() {
           try {
             fileUrl = await uploadToR2(
               prepared,
+              courseName,
               (loaded, total) => {
                 const elapsed = (performance.now() - startedAt) / 1000
                 const speed = elapsed > 0 ? loaded / elapsed / 1024 / 1024 : 0
@@ -806,7 +808,7 @@ export default function UploadPage() {
             )
 
             try {
-              coverUrl = await uploadToR2(cover, undefined, controller.signal)
+              coverUrl = await uploadToR2(cover, courseName, undefined, controller.signal)
             } catch (coverErr) {
               // 用户在封面上传期间点了取消：按取消处理，不再继续写库
               if (coverErr instanceof Error && coverErr.name === 'AbortError') return
