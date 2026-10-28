@@ -181,44 +181,100 @@ function isNearlyBlack(ctx: CanvasRenderingContext2D, width: number, height: num
   }
 }
 
-/** 从视频第 0.5 秒抽帧（适配竖屏），失败/全黑/过小返回 null（由上层走文字封面兜底） */
+/** 等待 video 的指定事件；超时或 error 事件都会 reject，供上层走兜底封面 */
+function waitForVideoEvent(video: HTMLVideoElement, event: 'loadedmetadata' | 'seeked', timeoutMs: number) {
+  return new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      cleanup()
+      reject(new Error(`等待 ${event} 超时`))
+    }, timeoutMs)
+
+    const cleanup = () => {
+      window.clearTimeout(timer)
+      video.removeEventListener(event, onDone)
+      video.removeEventListener('error', onError)
+    }
+    const onDone = () => {
+      cleanup()
+      resolve()
+    }
+    const onError = () => {
+      cleanup()
+      reject(new Error('视频解码失败'))
+    }
+
+    video.addEventListener(event, onDone)
+    video.addEventListener('error', onError)
+  })
+}
+
+/** Canvas 导出 JPEG；toBlob 抛错（如 Tainted canvases may not be exported）时 reject，触发兜底 */
+function canvasToJpegBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise<Blob>((resolve, reject) => {
+    try {
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            reject(new Error('封面导出为空'))
+            return
+          }
+          console.log('截取的封面 Blob 大小:', blob.size)
+          if (blob.size < 1024) {
+            reject(new Error('封面图片过小，疑似纯色图'))
+            return
+          }
+          resolve(blob)
+        },
+        'image/jpeg',
+        0.8,
+      )
+    } catch (err) {
+      // 画布被跨域资源污染时，某些浏览器会在 toBlob 同步抛错
+      reject(new Error(`Canvas 导出失败：${err instanceof Error ? err.message : String(err)}`))
+    }
+  })
+}
+
+/**
+ * 从本地视频抽帧（第 0.5 秒），失败返回 null，由上层生成文字兜底封面。
+ *
+ * 注意：截帧必须用本地 File 生成的 blob: 地址，绝不能用上传后的 R2 公网 URL——
+ * 远程截帧要求 R2 桶配置 CORS 且 `Access-Control-Expose-Headers` 暴露 Accept-Ranges、
+ * Content-Range 等头，Canvas 还可能被判为污染而无法导出，速度也慢。本地截帧无此问题。
+ */
 async function extractVideoFrame(file: File): Promise<File | null> {
-  const url = URL.createObjectURL(file)
+  const objectUrl = URL.createObjectURL(file)
   const video = document.createElement('video')
   try {
+    // 1. 创建元素并设置属性（crossOrigin 防止部分浏览器把画面判定为跨域资源）
     video.crossOrigin = 'anonymous'
     video.muted = true
     video.playsInline = true
     video.preload = 'auto'
-    video.src = url
 
-    // 1. loadedmetadata：此时可以拿到真实宽高（竖屏视频必须是 1080×1920 这类原生尺寸）
-    const { width, height } = await new Promise<{ width: number; height: number }>((resolve, reject) => {
-      video.onloadedmetadata = () => {
-        // HEVC 等无法解码的编码，浏览器给不出尺寸
-        if (!video.videoWidth || !video.videoHeight) {
-          reject(new Error('当前浏览器无法解码视频画面'))
-          return
-        }
-        resolve({ width: video.videoWidth, height: video.videoHeight })
-      }
-      video.onerror = () => reject(new Error('视频解码失败'))
-    })
+    // 2. 先设置 src / load()，再挂事件会漏事件；这里先声明等待句柄，绑定后立即触发加载
+    video.src = objectUrl
+    const metaPromise = waitForVideoEvent(video, 'loadedmetadata', 2500)
+    video.load()
+    await metaPromise
 
-    // 2. seek 到第 0.5 秒；不足 1 秒的短视频取其一半，避免越界导致 seeked 永不触发
+    // 3. 真实宽高（竖屏是 1080×1920 这类原生尺寸；HEVC 无法解码时为 0）
+    const width = video.videoWidth
+    const height = video.videoHeight
+    if (!width || !height) throw new Error('当前浏览器无法解码视频画面')
+
     const duration = Number.isFinite(video.duration) ? video.duration : 0
+    // 第 0.5 秒；不足 1 秒的短视频取其一半，避免 seek 越界导致 seeked 永不触发
     const seekTime = duration > 0 && duration < 1 ? duration / 2 : 0.5
     console.log(`[UploadPage] 截帧时间点 ${seekTime}s（总时长 ${duration.toFixed(2)}s，尺寸 ${width}×${height}）`)
-    await new Promise<void>((resolve, reject) => {
-      video.onseeked = () => resolve()
-      video.onerror = () => reject(new Error('跳转视频帧失败'))
-      video.currentTime = seekTime
-    })
+    const seekPromise = waitForVideoEvent(video, 'seeked', 2500)
+    video.currentTime = seekTime
+    await seekPromise
 
-    // seeked 表示画面已完成跳转，等一帧让合成器真正绘制上去
+    // seeked 表示画面已跳转完成，再等一帧让合成器把画面真正绘制上去
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 
-    // 3. Canvas 宽高严格等于视频原生宽高，竖屏不变形、不裁切
+    // 4. Canvas 尺寸严格等于视频原生宽高，竖屏不变形、不裁切
     const canvas = document.createElement('canvas')
     canvas.width = width
     canvas.height = height
@@ -229,23 +285,18 @@ async function extractVideoFrame(file: File): Promise<File | null> {
     // 纯黑画面同样走兜底，避免把黑图当封面
     if (isNearlyBlack(ctx, width, height)) throw new Error('抽到的是全黑画面')
 
-    // 4. 导出 JPEG Blob（质量 0.8）
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.8))
-    if (!blob) throw new Error('封面导出为空')
-    console.log('截取的封面 Blob 大小:', blob.size)
-    // 小于 1KB 基本就是纯色图
-    if (blob.size < 1024) throw new Error('封面图片过小，疑似纯色图')
-
+    // 5. 导出 JPEG（内部已处理空 Blob / 过小 / Canvas 污染）
+    const blob = await canvasToJpegBlob(canvas)
     return new File([blob], coverFileName(file), { type: 'image/jpeg' })
   } catch (err) {
     console.warn('[UploadPage] 视频抽帧失败:', err)
     return null
   } finally {
-    // 5. 释放解码资源与 Object URL，防止内存泄漏
+    // 6. 释放解码资源与 Object URL，防止内存泄漏
     video.src = ''
     video.removeAttribute('src')
     video.load()
-    URL.revokeObjectURL(url)
+    URL.revokeObjectURL(objectUrl)
   }
 }
 
