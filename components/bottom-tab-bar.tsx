@@ -18,6 +18,32 @@ type Tab = {
   isActive?: (pathname: string) => boolean
 }
 
+/** 模块所属的顶层路由命名空间（/chinese/literacy/daily → /chinese） */
+function moduleNamespace(gameRoute: string): string {
+  return `/${gameRoute.split('/')[1] ?? ''}`
+}
+
+/**
+ * 路由是否落在某个路径下。
+ * 根路径「今日」必须严格等于 /，否则 startsWith('/') 会让所有页面都高亮。
+ */
+function isUnder(pathname: string, base: string): boolean {
+  if (base === '/') return pathname === '/'
+  return pathname === base || pathname.startsWith(`${base}/`)
+}
+
+/**
+ * 当前路由是否属于某学科：
+ * 学科主页 /subject/{id}，或该学科模块所在的顶层命名空间 /chinese、/math、/english、/thinking …
+ * 用命名空间而不是完整模块路径，保证 /chinese/literacy、/chinese/literacy/daily 都能命中。
+ */
+function isSubjectPath(pathname: string, subject: { id: string; name: string }): boolean {
+  if (isUnder(pathname, `/subject/${subject.id}`)) return true
+  return SUBJECT_MODULES.some(
+    (m) => m.subjectName === subject.name && isUnder(pathname, moduleNamespace(m.gameRoute)),
+  )
+}
+
 /** 从当前路径推断所在学科（学科页或该学科的模块页） */
 function getActiveSubject(
   pathname: string,
@@ -26,9 +52,7 @@ function getActiveSubject(
   const subjectMatch = pathname.match(/^\/subject\/([^/]+)/)
   if (subjectMatch) return subjects.find((s) => s.id === subjectMatch[1]) ?? null
 
-  const mod = SUBJECT_MODULES.find((m) => pathname.startsWith(m.gameRoute))
-  if (mod) return subjects.find((s) => s.name === mod.subjectName) ?? null
-  return null
+  return subjects.find((s) => isSubjectPath(pathname, s)) ?? null
 }
 
 /**
@@ -88,15 +112,11 @@ export function BottomTabBar() {
                 href: `/subject/${activeSubject.id}`,
                 label: activeSubject.name,
                 icon: getSubjectMeta(activeSubject.id).icon,
-                isActive: (p: string) =>
-                  p.startsWith(`/subject/${activeSubject.id}`) ||
-                  SUBJECT_MODULES.filter((m) => m.subjectName === activeSubject.name).some((m) =>
-                    p.startsWith(m.gameRoute),
-                  ),
+                isActive: (p: string) => isSubjectPath(p, activeSubject),
               } as Tab,
             ]
           : []),
-        { href: '/store', label: '星星商城', icon: Gift, isActive: (p) => p.startsWith('/store') },
+        { href: '/store', label: '星星商城', icon: Gift, isActive: (p) => isUnder(p, '/store') },
       ]
     : [
         { href: '/', label: '今日', icon: CalendarCheck, isActive: (p) => p === '/' },
@@ -104,7 +124,7 @@ export function BottomTabBar() {
           href: `/subject/${s.id}`,
           label: s.name,
           icon: getSubjectMeta(s.id).icon,
-          isActive: (p: string) => p.startsWith(`/subject/${s.id}`),
+          isActive: (p: string) => isSubjectPath(p, s),
         })),
       ]
 
@@ -117,7 +137,7 @@ export function BottomTabBar() {
           高度放在 ul 上：避开 iPhone 底部安全区把 h-20 吃掉一半导致文字被裁剪 */}
       <ul className="mx-auto flex h-20 w-full max-w-md items-center justify-around md:gap-4 md:max-w-2xl">
         {tabs.map(({ href, label, icon: Icon, isActive }) => {
-          const active = isActive ? isActive(pathname) : pathname.startsWith(href)
+          const active = isActive ? isActive(pathname) : isUnder(pathname, href)
           return (
             <li key={href} className="flex-1 md:flex-none">
               <Link
