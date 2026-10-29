@@ -1,23 +1,64 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
+import { isTimedPassed, pickLevelIndex } from '@/lib/knowledge-logic'
+import { applyKnowledgeResult, type KnowledgeMasteryRow } from '@/lib/supabase-queries'
 import { speakChinese, speakChineseAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 import { RoundComplete, RoundProgress, MathBackLink, MATH_ROUND_TOTAL } from '@/app/math/game-ui'
 import { useMathRound } from '@/app/math/use-math-round'
 
-/** 预置图形规律（按周期循环） */
-const PATTERNS: string[][] = [
-  ['🔴', '🔵'],
-  ['⭐', '🌙'],
-  ['🍎', '🍎', '🍌'],
-  ['🐱', '🐶'],
-  ['🌸', '🌼', '🍀'],
-  ['🐰', '🐢', '🐰', '🐢'],
+/** 找规律的难度档位：知识点 = 游戏类型 + 难度（如 找规律_ABAB） */
+type PatternLevel = {
+  knowledge: string
+  /** 规律标签（ABAB / AABB / ABCABC） */
+  label: string
+  /** 该难度下的图形规律（按周期循环） */
+  patterns: string[][]
+  /** 达标时限（秒）：超过时限本局视为不达标 */
+  timeLimitSec: number
+}
+
+const PATTERN_LEVELS: PatternLevel[] = [
+  {
+    knowledge: '找规律_ABAB',
+    label: 'ABAB',
+    patterns: [
+      ['🔴', '🔵'],
+      ['⭐', '🌙'],
+      ['🐱', '🐶'],
+      ['🐰', '🐢'],
+    ],
+    timeLimitSec: 120,
+  },
+  {
+    knowledge: '找规律_AABB',
+    label: 'AABB',
+    patterns: [
+      ['🍎', '🍎', '🍌', '🍌'],
+      ['🌸', '🌸', '🌼', '🌼'],
+      ['🐷', '🐷', '🐔', '🐔'],
+    ],
+    timeLimitSec: 140,
+  },
+  {
+    knowledge: '找规律_ABCABC',
+    label: 'ABCABC',
+    patterns: [
+      ['🌸', '🌼', '🍀'],
+      ['🍎', '🍌', '🍇'],
+      ['🐱', '🐶', '🐭'],
+    ],
+    timeLimitSec: 160,
+  },
 ]
+
+/** 首答正确率达标线 */
+const PASS_RATE = 0.8
+
 /** 规律内可选图形不足时，用来凑干扰项 */
 const POOL = ['🌞', '🐸', '🍇', '🚗', '🎈', '🍓']
 
@@ -37,8 +78,8 @@ function shuffle<T>(arr: T[]): T[] {
   return out
 }
 
-function makeQuestion(): Question {
-  const pattern = PATTERNS[Math.floor(Math.random() * PATTERNS.length)]
+function makeQuestion(patterns: string[][]): Question {
+  const pattern = patterns[Math.floor(Math.random() * patterns.length)]
   /** 总共展示 4~5 个位置，最后一个用 ? 代替 */
   const total = 4 + Math.floor(Math.random() * 2)
   const visible = total - 1
@@ -55,18 +96,40 @@ function makeQuestion(): Question {
   return { sequence, answer, options: shuffle([answer, ...distractors]) }
 }
 
-export function PatternGame({ taskId }: { taskId: string | null }) {
+export function PatternGame({
+  taskId,
+  knowledge = [],
+}: {
+  taskId: string | null
+  /** knowledge_mastery 里 subject = '思维' 的记录（决定本局难度） */
+  knowledge?: KnowledgeMasteryRow[]
+}) {
+  /** 本局难度：上一档熟练度满级后自动解锁下一档（ABAB → AABB → ABCABC） */
+  const level = PATTERN_LEVELS[pickLevelIndex(PATTERN_LEVELS, knowledge)]
   const [question, setQuestion] = useState<Question | null>(null)
   const [locked, setLocked] = useState(false)
   const [wrongOption, setWrongOption] = useState<string | null>(null)
   const [hasTried, setHasTried] = useState(false)
+  /** 本局开始时间（毫秒），结算时用于判断是否超时 */
+  const startedAtRef = useRef(Date.now())
 
   const { solved, firstTryCorrect, finished, checked, checkingIn, error, earnedStars, isParent, addSolved, reset } =
     useMathRound(taskId)
 
   useEffect(() => {
-    setQuestion(makeQuestion())
-  }, [])
+    setQuestion(makeQuestion(level.patterns))
+  }, [level.patterns])
+
+  /** 通关后按「正确率 + 用时」回写该难度的熟练度；熟练度满级后自动解锁下一难度 */
+  useEffect(() => {
+    if (!finished) return
+    const elapsedSec = Math.round((Date.now() - startedAtRef.current) / 1000)
+    const accuracy = firstTryCorrect / MATH_ROUND_TOTAL
+    const passed = isTimedPassed(accuracy, elapsedSec, level.timeLimitSec, PASS_RATE)
+    applyKnowledgeResult('思维', level.knowledge, passed).catch((err: unknown) => {
+      console.warn('[Pattern] 写入知识点掌握度失败:', err)
+    })
+  }, [finished, firstTryCorrect, level.knowledge, level.timeLimitSec])
 
   /** 新题出现时自动播报；新题会打断上一题的"答对了"语音 */
   useEffect(() => {
@@ -86,7 +149,7 @@ export function PatternGame({ taskId }: { taskId: string | null }) {
       addSolved(!hasTried)
       stopSpeak()
       await speakChineseAsync(`答对了，是 ${option}`)
-      setQuestion(makeQuestion())
+      setQuestion(makeQuestion(level.patterns))
       setLocked(false)
       setWrongOption(null)
       setHasTried(false)
@@ -98,7 +161,8 @@ export function PatternGame({ taskId }: { taskId: string | null }) {
 
   const restart = () => {
     reset()
-    setQuestion(makeQuestion())
+    startedAtRef.current = Date.now()
+    setQuestion(makeQuestion(level.patterns))
     setLocked(false)
     setWrongOption(null)
     setHasTried(false)
@@ -108,7 +172,7 @@ export function PatternGame({ taskId }: { taskId: string | null }) {
     <>
       <PageHeader
         title="找规律"
-        subtitle="看看图形怎么排，猜一猜下一个"
+        subtitle={`看看图形怎么排，猜一猜下一个 · 难度 ${level.label}`}
         action={<MathBackLink href="/thinking" label="思维乐园" />}
       />
       <div className="flex flex-col gap-5 px-5 pb-6">

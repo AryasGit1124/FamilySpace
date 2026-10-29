@@ -5,14 +5,21 @@ import { Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
 import { ALPHABET } from '@/lib/english-data'
+import type { KnowledgeMasteryRow } from '@/lib/supabase-queries'
 import { speakEnglish, speakEnglishAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 import { AlphabetBackLink, RoundComplete, RoundProgress, ENGLISH_ROUND_TOTAL } from '../../game-ui'
-import { useEnglishRound } from '../../use-english-round'
+import {
+  letterFromKnowledge,
+  letterKnowledge,
+  useEnglishRound,
+} from '../../use-english-round'
 
 type Question = {
   letter: string
   options: string[]
+  /** 本题考查的知识点：字母X */
+  knowledge: string
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -24,27 +31,49 @@ function shuffle<T>(arr: T[]): T[] {
   return out
 }
 
-function makeQuestion(): Question {
-  const target = ALPHABET[Math.floor(Math.random() * ALPHABET.length)]
+function makeQuestion(reviewLetter?: string | null): Question {
+  const target =
+    ALPHABET.find((item) => item.upper === reviewLetter) ??
+    ALPHABET[Math.floor(Math.random() * ALPHABET.length)]
   const distractors = shuffle(ALPHABET.filter((item) => item.upper !== target.upper)).slice(0, 3)
   return {
     letter: target.upper,
     options: shuffle([target.upper, ...distractors.map((item) => item.upper)]),
+    knowledge: letterKnowledge(target.upper),
   }
 }
 
-export function ListenGame({ taskId }: { taskId: string | null }) {
+export function ListenGame({
+  taskId,
+  knowledge = [],
+}: {
+  taskId: string | null
+  /** knowledge_mastery 里 subject = '英语' 的记录（到期的字母会优先出题） */
+  knowledge?: KnowledgeMasteryRow[]
+}) {
   const [question, setQuestion] = useState<Question | null>(null)
   const [locked, setLocked] = useState(false)
   const [wrongOption, setWrongOption] = useState<string | null>(null)
   const [hasTried, setHasTried] = useState(false)
 
-  const { solved, firstTryCorrect, finished, checked, checkingIn, error, earnedStars, isParent, addSolved, reset } =
-    useEnglishRound(taskId)
+  const {
+    solved,
+    firstTryCorrect,
+    finished,
+    checked,
+    checkingIn,
+    error,
+    earnedStars,
+    isParent,
+    addSolved,
+    reset,
+    pickReviewTarget,
+    recordKnowledge,
+  } = useEnglishRound(taskId, knowledge)
 
   useEffect(() => {
-    setQuestion(makeQuestion())
-  }, [])
+    setQuestion(makeQuestion(letterFromKnowledge(pickReviewTarget('letter'))))
+  }, [pickReviewTarget])
 
   /** 页面加载与每道新题都自动播报字母发音；新题打断上一题语音 */
   useEffect(() => {
@@ -57,7 +86,7 @@ export function ListenGame({ taskId }: { taskId: string | null }) {
   useEffect(() => () => stopSpeak(), [])
 
   const nextQuestion = () => {
-    setQuestion(makeQuestion())
+    setQuestion(makeQuestion(letterFromKnowledge(pickReviewTarget('letter'))))
     setLocked(false)
     setWrongOption(null)
     setHasTried(false)
@@ -68,6 +97,7 @@ export function ListenGame({ taskId }: { taskId: string | null }) {
     if (!question || locked) return
     if (option === question.letter) {
       setLocked(true)
+      recordKnowledge(question.knowledge, !hasTried)
       addSolved(!hasTried)
       stopSpeak()
       await speakEnglishAsync('Yes! Well done.')
@@ -80,7 +110,7 @@ export function ListenGame({ taskId }: { taskId: string | null }) {
 
   const restart = () => {
     reset()
-    setQuestion(makeQuestion())
+    setQuestion(makeQuestion(letterFromKnowledge(pickReviewTarget('letter'))))
     setLocked(false)
     setWrongOption(null)
     setHasTried(false)

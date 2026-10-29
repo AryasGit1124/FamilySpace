@@ -5,14 +5,17 @@ import { Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
 import { VOCAB, type VocabWord } from '@/lib/english-data'
+import type { KnowledgeMasteryRow } from '@/lib/supabase-queries'
 import { speakEnglish, speakEnglishAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 import { RoundComplete, RoundProgress, ENGLISH_ROUND_TOTAL } from '../game-ui'
-import { useEnglishRound } from '../use-english-round'
+import { useEnglishRound, wordFromKnowledge, wordKnowledge } from '../use-english-round'
 
 type Question = {
   word: VocabWord
   options: VocabWord[]
+  /** 本题考查的知识点：单词Apple */
+  knowledge: string
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -24,30 +27,48 @@ function shuffle<T>(arr: T[]): T[] {
   return out
 }
 
-function makeQuestion(): Question {
-  const word = VOCAB[Math.floor(Math.random() * VOCAB.length)]
+function makeQuestion(reviewWord?: string | null): Question {
+  const word =
+    (reviewWord
+      ? VOCAB.find((item) => item.en.toLowerCase() === reviewWord.toLowerCase())
+      : undefined) ?? VOCAB[Math.floor(Math.random() * VOCAB.length)]
   const distractors = shuffle(VOCAB.filter((item) => item.en !== word.en)).slice(0, 3)
-  return { word, options: shuffle([word, ...distractors]) }
+  return { word, options: shuffle([word, ...distractors]), knowledge: wordKnowledge(word.en) }
 }
 
 export function VocabGame({
   taskId,
   backHref,
+  knowledge = [],
 }: {
   taskId: string | null
   backHref?: string
+  /** knowledge_mastery 里 subject = '英语' 的记录（到期的单词会优先出题） */
+  knowledge?: KnowledgeMasteryRow[]
 }) {
   const [question, setQuestion] = useState<Question | null>(null)
   const [locked, setLocked] = useState(false)
   const [wrongOption, setWrongOption] = useState<string | null>(null)
   const [hasTried, setHasTried] = useState(false)
 
-  const { solved, firstTryCorrect, finished, checked, checkingIn, error, earnedStars, isParent, addSolved, reset } =
-    useEnglishRound(taskId)
+  const {
+    solved,
+    firstTryCorrect,
+    finished,
+    checked,
+    checkingIn,
+    error,
+    earnedStars,
+    isParent,
+    addSolved,
+    reset,
+    pickReviewTarget,
+    recordKnowledge,
+  } = useEnglishRound(taskId, knowledge)
 
   useEffect(() => {
-    setQuestion(makeQuestion())
-  }, [])
+    setQuestion(makeQuestion(wordFromKnowledge(pickReviewTarget('word'))))
+  }, [pickReviewTarget])
 
   /** 新题自动播放英文单词；新题打断上一题语音 */
   useEffect(() => {
@@ -60,7 +81,7 @@ export function VocabGame({
   useEffect(() => () => stopSpeak(), [])
 
   const nextQuestion = () => {
-    setQuestion(makeQuestion())
+    setQuestion(makeQuestion(wordFromKnowledge(pickReviewTarget('word'))))
     setLocked(false)
     setWrongOption(null)
     setHasTried(false)
@@ -71,6 +92,7 @@ export function VocabGame({
     if (!question || locked) return
     if (option.en === question.word.en) {
       setLocked(true)
+      recordKnowledge(question.knowledge, !hasTried)
       addSolved(!hasTried)
       stopSpeak()
       await speakEnglishAsync(`Yes! ${option.en}`)
@@ -83,7 +105,7 @@ export function VocabGame({
 
   const restart = () => {
     reset()
-    setQuestion(makeQuestion())
+    setQuestion(makeQuestion(wordFromKnowledge(pickReviewTarget('word'))))
     setLocked(false)
     setWrongOption(null)
     setHasTried(false)

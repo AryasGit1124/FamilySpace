@@ -6,12 +6,33 @@ import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
 import { useAuth } from '@/components/auth-provider'
 import { MEMORY_EMOJIS } from '@/lib/memory-emojis'
+import { isTimedPassed, pickLevelIndex } from '@/lib/knowledge-logic'
 import { handleGameCheckin } from '@/lib/rewards'
+import { applyKnowledgeResult, type KnowledgeMasteryRow } from '@/lib/supabase-queries'
 import { speakChinese } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 
-/** 每局 8 对，共 16 张牌（4x4） */
-const PAIR_COUNT = 8
+/** 记忆翻牌的难度档位：知识点 = 游戏类型 + 难度（如 记忆翻翻乐_4x4） */
+type MemoryLevel = {
+  knowledge: string
+  /** 难度标签（4x3 = 4 列 × 3 行，共 6 对） */
+  label: string
+  /** 本局需要配对的图案对数 */
+  pairs: number
+  cols: 4 | 5
+  /** 达标时限（秒）：超过时限本局视为不达标 */
+  timeLimitSec: number
+}
+
+const MEMORY_LEVELS: MemoryLevel[] = [
+  { knowledge: '记忆翻翻乐_4x3', label: '4x3', pairs: 6, cols: 4, timeLimitSec: 120 },
+  { knowledge: '记忆翻翻乐_4x4', label: '4x4', pairs: 8, cols: 4, timeLimitSec: 150 },
+  { knowledge: '记忆翻翻乐_5x4', label: '5x4', pairs: 10, cols: 5, timeLimitSec: 180 },
+]
+
+/** 首答配对率达到该值且不超时，才算本局达标（回写时升级） */
+const PASS_RATE = 0.6
+
 /** 两张不一样时，1 秒后自动盖回去 */
 const FLIP_BACK_DELAY = 1000
 
@@ -31,9 +52,9 @@ function shuffle<T>(arr: T[]): T[] {
   return out
 }
 
-/** 随机抽 8 个图案，复制一份后洗牌，组成 16 张牌 */
-function buildDeck(): Card[] {
-  const picked = shuffle(MEMORY_EMOJIS).slice(0, PAIR_COUNT)
+/** 随机抽指定对数个图案，复制一份后洗牌，组成整副牌 */
+function buildDeck(pairCount: number): Card[] {
+  const picked = shuffle(MEMORY_EMOJIS).slice(0, pairCount)
   const pairs = picked.flatMap((item, index) => [
     { key: index * 2, emoji: item.emoji, name: item.name },
     { key: index * 2 + 1, emoji: item.emoji, name: item.name },
@@ -41,9 +62,18 @@ function buildDeck(): Card[] {
   return shuffle(pairs)
 }
 
-export function MemoryGame({ taskId }: { taskId: string | null }) {
+export function MemoryGame({
+  taskId,
+  knowledge = [],
+}: {
+  taskId: string | null
+  /** knowledge_mastery 里 subject = '思维' 的记录（决定本局难度） */
+  knowledge?: KnowledgeMasteryRow[]
+}) {
   const { role } = useAuth()
   const isParent = role === 'parent'
+  /** 本局难度：上一档熟练度满级后自动解锁下一档 */
+  const level = MEMORY_LEVELS[pickLevelIndex(MEMORY_LEVELS, knowledge)]
   // 牌面在客户端生成（useEffect），避免随机内容导致 hydration 不匹配
   const [deck, setDeck] = useState<Card[]>([])
   /** 当前翻开的牌下标（最多 2 张） */
@@ -57,18 +87,24 @@ export function MemoryGame({ taskId }: { taskId: string | null }) {
   /** 两张不匹配等待盖回时锁定点击 */
   const [locked, setLocked] = useState(false)
   const [finished, setFinished] = useState(false)
+  /** 本局用时（秒），结算时按下限判断是否达标 */
+  const [elapsedSec, setElapsedSec] = useState(0)
   const [earnedStars, setEarnedStars] = useState(0)
   const [checkingIn, setCheckingIn] = useState(false)
   const [checked, setChecked] = useState(false)
   const [checkinError, setCheckinError] = useState('')
   const flipBackTimer = useRef<number | null>(null)
+  /** 本局开始时间（毫秒） */
+  const startedAtRef = useRef(0)
 
   const newGame = () => {
     if (flipBackTimer.current !== null) {
       window.clearTimeout(flipBackTimer.current)
       flipBackTimer.current = null
     }
-    setDeck(buildDeck())
+    startedAtRef.current = Date.now()
+    setElapsedSec(0)
+    setDeck(buildDeck(level.pairs))
     setFlipped([])
     setMatched(new Set())
     setExposed(new Set())
@@ -108,6 +144,7 @@ export function MemoryGame({ taskId }: { taskId: string | null }) {
       setFlipped([])
       speakChinese(`答对啦，${deck[a].name}`)
       if (newMatched.size === deck.length) {
+        setElapsedSec(Math.round((Date.now() - startedAtRef.current) / 1000))
         setFinished(true)
         speakChinese('太棒了，全部找到啦！')
       }
@@ -134,7 +171,7 @@ export function MemoryGame({ taskId }: { taskId: string | null }) {
       return
     }
     setCheckingIn(true)
-    handleGameCheckin(taskId, PAIR_COUNT, firstTryMatches, isParent)
+    handleGameCheckin(taskId, level.pairs, firstTryMatches, isParent)
       .then((stars) => {
         setEarnedStars(stars)
         setChecked(true)
@@ -146,13 +183,25 @@ export function MemoryGame({ taskId }: { taskId: string | null }) {
       .finally(() => setCheckingIn(false))
   }
 
+  /** 通关后按「正确率 + 用时」回写该难度的熟练度；熟练度满级后自动解锁下一难度 */
+  useEffect(() => {
+    if (!finished) return
+    const rate = level.pairs > 0 ? firstTryMatches / level.pairs : 0
+    const passed = isTimedPassed(rate, elapsedSec, level.timeLimitSec, PASS_RATE)
+    applyKnowledgeResult('思维', level.knowledge, passed).catch((err: unknown) => {
+      console.warn('[Memory] 写入知识点掌握度失败:', err)
+    })
+  }, [finished, elapsedSec, firstTryMatches, level.knowledge, level.pairs, level.timeLimitSec])
+
   const matchedPairs = matched.size / 2
+  /** 牌面列数随难度变化（4x3 / 4x4 四列，5x4 五列） */
+  const gridCols = level.cols === 5 ? 'grid-cols-5' : 'grid-cols-4'
 
   return (
     <>
       <PageHeader
         title="记忆翻牌"
-        subtitle={`已配对 ${matchedPairs} / ${PAIR_COUNT} 对`}
+        subtitle={`已配对 ${matchedPairs} / ${level.pairs} 对 · 难度 ${level.label}`}
         backHref="/thinking"
         backLabel="返回思维乐园"
       />
@@ -164,7 +213,7 @@ export function MemoryGame({ taskId }: { taskId: string | null }) {
             </span>
             <h2 className="text-xl font-bold">太棒了，全部找到啦！</h2>
             <p className="text-sm text-muted-foreground">
-              本次配对 {PAIR_COUNT} 对（首答配对 {firstTryMatches} 对）
+              本次配对 {level.pairs} 对（首答配对 {firstTryMatches} 对），用时 {elapsedSec} 秒
             </p>
             {checked && (
               <p className="text-base font-semibold text-amber-600">
@@ -188,13 +237,13 @@ export function MemoryGame({ taskId }: { taskId: string | null }) {
           <>
             {deck.length === 0 ? (
               // 牌面生成前的占位，避免布局跳动
-              <div className="grid grid-cols-4 gap-2" aria-hidden="true">
-                {Array.from({ length: 16 }, (_, i) => (
+              <div className={cn('grid gap-2', gridCols)} aria-hidden="true">
+                {Array.from({ length: level.pairs * 2 }, (_, i) => (
                   <div key={i} className="aspect-square rounded-2xl bg-muted/60" />
                 ))}
               </div>
             ) : (
-              <ul className="grid grid-cols-4 gap-2" role="list" aria-label="记忆翻牌棋盘">
+              <ul className={cn('grid gap-2', gridCols)} role="list" aria-label="记忆翻牌棋盘">
                 {deck.map((card, index) => {
                   const isUp = flipped.includes(index) || matched.has(index)
                   const isMatched = matched.has(index)

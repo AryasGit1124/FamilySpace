@@ -5,15 +5,18 @@ import { Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/page-header'
 import { ALPHABET, VOCAB, type VocabWord } from '@/lib/english-data'
+import type { KnowledgeMasteryRow } from '@/lib/supabase-queries'
 import { speakEnglish, speakEnglishAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 import { RoundComplete, RoundProgress, ENGLISH_ROUND_TOTAL } from '../game-ui'
-import { useEnglishRound } from '../use-english-round'
+import { letterFromKnowledge, letterKnowledge, useEnglishRound } from '../use-english-round'
 
 type Question = {
   word: VocabWord
   answer: string
   options: string[]
+  /** 本题考查的知识点：字母R（单词首字母发音） */
+  knowledge: string
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -36,6 +39,7 @@ function makeQuestion(practiceLetter: string | null): Question {
     word,
     answer,
     options: shuffle([answer, ...distractors.map((item) => item.upper)]),
+    knowledge: letterKnowledge(answer),
   }
 }
 
@@ -47,9 +51,12 @@ function promptOf(question: Question): string {
 export function PhonicsGame({
   taskId,
   backHref,
+  knowledge = [],
 }: {
   taskId: string | null
   backHref?: string
+  /** knowledge_mastery 里 subject = '英语' 的记录（到期的字母会优先出题） */
+  knowledge?: KnowledgeMasteryRow[]
 }) {
   const [question, setQuestion] = useState<Question | null>(null)
   const [practiceLetter, setPracticeLetter] = useState<string | null>(null)
@@ -57,12 +64,28 @@ export function PhonicsGame({
   const [wrongOption, setWrongOption] = useState<string | null>(null)
   const [hasTried, setHasTried] = useState(false)
 
-  const { solved, firstTryCorrect, finished, checked, checkingIn, error, earnedStars, isParent, addSolved, reset } =
-    useEnglishRound(taskId)
+  const {
+    solved,
+    firstTryCorrect,
+    finished,
+    checked,
+    checkingIn,
+    error,
+    earnedStars,
+    isParent,
+    addSolved,
+    reset,
+    pickReviewTarget,
+    recordKnowledge,
+  } = useEnglishRound(taskId, knowledge)
+
+  /** 手动选了练某个字母时以手动为准，否则优先出到期待复习的字母 */
+  const makeNext = (letter: string | null) =>
+    makeQuestion(letter ?? letterFromKnowledge(pickReviewTarget('letter')))
 
   useEffect(() => {
-    setQuestion(makeQuestion(null))
-  }, [])
+    setQuestion(makeQuestion(letterFromKnowledge(pickReviewTarget('letter'))))
+  }, [pickReviewTarget])
 
   /** 新题自动播报字母 chant，如「R, R, Rabbit」；新题打断上一题语音 */
   useEffect(() => {
@@ -75,7 +98,7 @@ export function PhonicsGame({
   useEffect(() => () => stopSpeak(), [])
 
   const nextQuestion = () => {
-    setQuestion(makeQuestion(practiceLetter))
+    setQuestion(makeNext(practiceLetter))
     setLocked(false)
     setWrongOption(null)
     setHasTried(false)
@@ -86,6 +109,7 @@ export function PhonicsGame({
     if (!question || locked) return
     if (option === question.answer) {
       setLocked(true)
+      recordKnowledge(question.knowledge, !hasTried)
       addSolved(!hasTried)
       stopSpeak()
       await speakEnglishAsync(`Yes! ${question.word.en}`)
@@ -98,7 +122,7 @@ export function PhonicsGame({
 
   const restart = () => {
     reset()
-    setQuestion(makeQuestion(practiceLetter))
+    setQuestion(makeNext(practiceLetter))
     setLocked(false)
     setWrongOption(null)
     setHasTried(false)
@@ -109,7 +133,7 @@ export function PhonicsGame({
     if (letter === practiceLetter) return
     setPracticeLetter(letter)
     reset()
-    setQuestion(makeQuestion(letter))
+    setQuestion(makeNext(letter))
     setLocked(false)
     setWrongOption(null)
     setHasTried(false)

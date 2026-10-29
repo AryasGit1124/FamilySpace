@@ -1,20 +1,41 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { CheckCircle2, Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/components/auth-provider'
 import { handleGameCheckin } from '@/lib/rewards'
+import { applyKnowledgeResult, type KnowledgeMasteryRow } from '@/lib/supabase-queries'
+import { isPassed, maxNumberForLevel, pickFocusIndex, type Focus } from '@/lib/knowledge-logic'
+import { todayStr } from '@/lib/dates'
 import { speakChinese, speakChineseAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 import { MathBackLink } from '@/app/math/game-ui'
 
-/** 每个环节的题数 / 总题数：4 个环节各 4 题，共 16 题 */
-const QUESTIONS_PER_STEP = 4
-const TOTAL_QUESTIONS = 16
 const STEP_LABELS = ['点数', '匹配', '比大小', '加减法'] as const
 type StepKind = (typeof STEP_LABELS)[number]
+
+/** 知识点名称（与 knowledge_mastery.knowledge 对应） */
+const KNOWLEDGE_NAMES: Record<StepKind, string> = {
+  点数: '点数',
+  匹配: '数量匹配',
+  比大小: '比大小',
+  加减法: '加减法',
+}
+
+/** 今日重点复习环节的题量 / 其它环节的题量；总题数固定为 4 + 2×3 = 10 */
+const FOCUS_QUESTIONS = 4
+const NORMAL_QUESTIONS = 2
+const TOTAL_QUESTIONS = FOCUS_QUESTIONS + NORMAL_QUESTIONS * (STEP_LABELS.length - 1)
+
+/** 知识点顺序（与 STEP_LABELS 一一对应），供选今日主题用 */
+const MATH_KNOWLEDGE_NAMES = STEP_LABELS.map((label) => KNOWLEDGE_NAMES[label])
+
+/** 今日主题：到期待复习优先，其次新学，最后兜底最弱（算法见 lib/knowledge-logic） */
+function pickFocus(rows: KnowledgeMasteryRow[]): Focus {
+  return pickFocusIndex(rows, MATH_KNOWLEDGE_NAMES, todayStr())
+}
 
 const EMOJIS = ['🍎', '🐟', '⭐', '🍌', '🐰', '🌸', '🐱', '🚗', '🎈', '🍓']
 /** 比大小 / 加减法统一用苹果做具象配图 */
@@ -54,8 +75,9 @@ function buildNumberOptions(answer: number, min: number, max: number): number[] 
   return shuffle(Array.from(values))
 }
 
-function makeCountQ(): CountQ {
-  const count = rand(1, 10)
+/** 点数：数量随难度上限走（5 以内 / 10 以内） */
+function makeCountQ(maxNumber = 10): CountQ {
+  const count = rand(1, Math.min(maxNumber, 10))
   return {
     kind: '点数',
     emoji: EMOJIS[Math.floor(Math.random() * EMOJIS.length)],
@@ -64,8 +86,9 @@ function makeCountQ(): CountQ {
   }
 }
 
-function makeMatchQ(): MatchQ {
-  const target = rand(1, 10)
+/** 数量匹配：目标数量随难度上限走，干扰框保持 1-10 */
+function makeMatchQ(maxNumber = 10): MatchQ {
+  const target = rand(1, Math.min(maxNumber, 10))
   const counts = buildNumberOptions(target, 1, 10)
   const emojis = shuffle(EMOJIS).slice(0, counts.length)
   return {
@@ -75,10 +98,11 @@ function makeMatchQ(): MatchQ {
   }
 }
 
-function makeCompareQ(): CompareQ {
-  let a = rand(1, 20)
-  let b = rand(1, 20)
-  while (a === b) b = rand(1, 20)
+/** 比大小：两个数都在难度上限内且不相等 */
+function makeCompareQ(maxNumber = 10): CompareQ {
+  let a = rand(1, maxNumber)
+  let b = rand(1, maxNumber)
+  while (a === b) b = rand(1, maxNumber)
   return Math.random() < 0.5 ? { kind: '比大小', a, b } : { kind: '比大小', a: b, b: a }
 }
 
@@ -99,11 +123,11 @@ function generateAddSubQuestion(maxNumber: number): AddQ {
 function makeQuestion(kind: StepKind, maxNumber: number): Question {
   switch (kind) {
     case '点数':
-      return makeCountQ()
+      return makeCountQ(maxNumber)
     case '匹配':
-      return makeMatchQ()
+      return makeMatchQ(maxNumber)
     case '比大小':
-      return makeCompareQ()
+      return makeCompareQ(maxNumber)
     default:
       return generateAddSubQuestion(maxNumber)
   }
@@ -123,11 +147,11 @@ function questionSpeech(q: Question): string {
   }
 }
 
-/** 本次闯关（16 题）的星星规则：首答 16 题全对 → 2 星；≥14 题（90%以上） → 1 星；否则 0 星 */
-function mathDailyStarRule(accuracy: number): number {
-  const correct = Math.round(accuracy * TOTAL_QUESTIONS)
-  if (correct >= TOTAL_QUESTIONS) return 2
-  if (correct >= 14) return 1
+/** 本次闯关（10 题）的星星规则：首答全对 → 2 星；≥90% → 1 星；否则 0 星 */
+function mathDailyStarRule(total: number, accuracy: number): number {
+  const correct = Math.round(accuracy * total)
+  if (correct >= total) return 2
+  if (correct >= Math.ceil(total * 0.9)) return 1
   return 0
 }
 
@@ -159,7 +183,16 @@ function EmojiStack({
   )
 }
 
-export function MathDailyClient({ taskId, backHref }: { taskId: string | null; backHref?: string }) {
+export function MathDailyClient({
+  taskId,
+  backHref,
+  knowledge,
+}: {
+  taskId: string | null
+  backHref?: string
+  /** knowledge_mastery 里该学科已有的知识点记录（缺失 = 还没练过） */
+  knowledge: KnowledgeMasteryRow[]
+}) {
   const router = useRouter()
   const { role } = useAuth()
   const isParent = role === 'parent'
@@ -180,20 +213,41 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
   const [locked, setLocked] = useState(false)
   /** 比大小：选对后填入表达式的符号（null = 还没答对） */
   const [filledSymbol, setFilledSymbol] = useState<string | null>(null)
-  /** 加减法难度：5 / 10 / 20 以内 */
+  /** 加减法难度：5 / 10 / 20 以内（重点复习环节由复习等级自动决定） */
   const [maxNumber, setMaxNumber] = useState(10)
 
   const [checkingIn, setCheckingIn] = useState(false)
   const [earnedStars, setEarnedStars] = useState<number | null>(null)
   const [error, setError] = useState('')
 
-  const stepKind: StepKind = STEP_LABELS[Math.min(stepIndex, STEP_LABELS.length - 1)]
-  const doneCount = Math.min(stepIndex * QUESTIONS_PER_STEP + qIndex, TOTAL_QUESTIONS)
+  /** 今日主题环节：到期薄弱点 / 没练过的新知识点 / 最弱的一个 */
+  const focus = useMemo(() => pickFocus(knowledge), [knowledge])
+  /** 主题环节的出题范围由复习等级决定 */
+  const focusMax = maxNumberForLevel(focus.level)
+  /** 每个环节的题量：主题 4 题，其他各 2 题 */
+  const questionsFor = useCallback(
+    (index: number) => (index === focus.index ? FOCUS_QUESTIONS : NORMAL_QUESTIONS),
+    [focus.index],
+  )
+  /** 各环节的起始题号，用于顶部进度 */
+  const stepStarts = useMemo(() => {
+    const starts = [0]
+    for (let i = 0; i < STEP_LABELS.length; i++) starts.push(starts[i] + questionsFor(i))
+    return starts
+  }, [questionsFor])
 
-  // 步骤、题号或加减法难度变化时出新题
+  /** 每个环节的首答正确题数 / 是否已回写掌握度 */
+  const stepCorrectRef = useRef<number[]>([0, 0, 0, 0])
+  const stepAppliedRef = useRef<boolean[]>([false, false, false, false])
+
+  const stepKind: StepKind = STEP_LABELS[Math.min(stepIndex, STEP_LABELS.length - 1)]
+  const doneCount = Math.min(stepStarts[stepIndex] + qIndex, TOTAL_QUESTIONS)
+
+  // 步骤、题号或难度变化时出新题（主题环节用复习等级对应的范围）
   useEffect(() => {
     if (stepIndex < STEP_LABELS.length) {
-      setQuestion(makeQuestion(STEP_LABELS[stepIndex], maxNumber))
+      const range = stepIndex === focus.index ? focusMax : maxNumber
+      setQuestion(makeQuestion(STEP_LABELS[stepIndex], range))
       // 新题一律清空选中/错误反馈，按钮恢复白底灰边
       setSelectedKey(null)
       setWrongKey(null)
@@ -205,9 +259,9 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
       setLocked(false)
       setFilledSymbol(null)
     }
-  }, [stepIndex, qIndex, maxNumber])
+  }, [stepIndex, qIndex, maxNumber, focus.index, focusMax])
 
-  /** 切换加减法难度：重置本关 2 题并按新难度重新出题 */
+  /** 切换加减法难度：重置本关题目并按新难度重新出题 */
   const switchDifficulty = (n: number) => {
     if (n === maxNumber || locked) return
     setQIndex(0)
@@ -231,20 +285,37 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
     [],
   )
 
-  const advance = useCallback(() => {
-    if (qIndex + 1 < QUESTIONS_PER_STEP) {
+  /** 离开某个环节时按「首答正确率」回写 knowledge_mastery，每环节只回写一次 */
+  const flushStepResult = (index: number) => {
+    if (stepAppliedRef.current[index]) return
+    stepAppliedRef.current[index] = true
+    const total = index === focus.index ? FOCUS_QUESTIONS : NORMAL_QUESTIONS
+    applyKnowledgeResult(
+      '数学',
+      KNOWLEDGE_NAMES[STEP_LABELS[index]],
+      isPassed(stepCorrectRef.current[index], total),
+    ).catch((err: unknown) => console.warn('[MathDaily] 写入知识点掌握度失败:', err))
+  }
+
+  const advance = () => {
+    if (qIndex + 1 < questionsFor(stepIndex)) {
       setQIndex((i) => i + 1)
     } else {
+      flushStepResult(stepIndex)
       setStepIndex((s) => s + 1)
       setQIndex(0)
     }
-  }, [qIndex])
+  }
 
   /** 统一点选逻辑：点错红色抖动 800ms 后可重选；点对保持绿色，语音播完再进下一题 */
   const pick = async (key: string, isCorrect: boolean) => {
     if (locked) return
     if (isCorrect) {
-      if (!hasTriedRef.current) setTotalFirstTryCorrect((n) => n + 1)
+      if (!hasTriedRef.current) {
+        setTotalFirstTryCorrect((n) => n + 1)
+        // 记录本环节的首答正确题数，用于环节结束时的掌握度回写
+        stepCorrectRef.current[stepIndex] += 1
+      }
       hasTriedRef.current = true
       if (wrongTimerRef.current !== null) {
         window.clearTimeout(wrongTimerRef.current)
@@ -280,7 +351,13 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
     setCheckingIn(true)
     setError('')
     try {
-      const stars = await handleGameCheckin(taskId, TOTAL_QUESTIONS, totalFirstTryCorrect, isParent, mathDailyStarRule)
+      const stars = await handleGameCheckin(
+        taskId,
+        TOTAL_QUESTIONS,
+        totalFirstTryCorrect,
+        isParent,
+        (accuracy: number) => mathDailyStarRule(TOTAL_QUESTIONS, accuracy),
+      )
       setEarnedStars(stars)
     } catch (err) {
       console.error('[MathDaily] 打卡失败:', err)
@@ -495,24 +572,27 @@ export function MathDailyClient({ taskId, backHref }: { taskId: string | null; b
           {/* ════════ Step 4：加减法（算式 + 苹果配图） ════════ */}
           {question.kind === '加减法' && (
             <>
-              <div className="flex shrink-0 justify-center gap-2">
-                {[5, 10, 20].map((n) => (
-                  <button
-                    key={n}
-                    type="button"
-                    disabled={locked}
-                    onClick={() => switchDifficulty(n)}
-                    className={cn(
-                      'rounded-full border-2 px-4 py-1 text-xs font-bold transition-colors disabled:opacity-60 md:text-sm',
-                      maxNumber === n
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border bg-card text-muted-foreground hover:bg-muted/50',
-                    )}
-                  >
-                    {n}以内
-                  </button>
-                ))}
-              </div>
+              {/* 加减法是今日主题时难度由复习等级自动决定，不再显示手动切换 */}
+              {stepIndex !== focus.index && (
+                <div className="flex shrink-0 justify-center gap-2">
+                  {[5, 10, 20].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      disabled={locked}
+                      onClick={() => switchDifficulty(n)}
+                      className={cn(
+                        'rounded-full border-2 px-4 py-1 text-xs font-bold transition-colors disabled:opacity-60 md:text-sm',
+                        maxNumber === n
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border bg-card text-muted-foreground hover:bg-muted/50',
+                      )}
+                    >
+                      {n}以内
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="flex min-h-0 flex-1 items-center justify-center gap-3 rounded-2xl border bg-card p-3 md:gap-6">
                 <div className="flex flex-col items-center gap-1">
                   <span className="text-5xl font-bold md:text-6xl">{question.a}</span>

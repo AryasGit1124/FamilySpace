@@ -3,28 +3,39 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, ArrowRight, BookOpenText, CheckCircle2, Volume2, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, CheckCircle2, Volume2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { PoemPlayground } from '@/app/components/PoemPlayground'
 import { useAuth } from '@/components/auth-provider'
 import {
+  applyQuizResult,
   ensureModuleTaskIdBySubjectName,
-  fetchDailyContent,
+  fetchDueReviewChars,
+  fetchLiteracyCharsByIds,
   fetchLiteracyCharsByLevel,
+  fetchLearnedPoemTitles,
+  fetchMasteredChars,
   fetchMasteryMap,
-  saveDailyContent,
+  fetchPoemById,
+  fetchPoems,
+  fetchUnseenChars,
+  insertLearningRecord,
   upsertMastery,
   type LiteracyChar,
   type MasteryStatus,
+  type Poem,
 } from '@/lib/supabase-queries'
 import { handleGameCheckin } from '@/lib/rewards'
+import { todayStr } from '@/lib/dates'
 import { resolveWordCard, type WordCard } from '@/lib/literacy-words'
-import { todayDateKey } from '@/lib/supabase-adapter'
-import { speakChar, speakChinese, speakLines, speakLinesAsync, stopSpeak } from '@/lib/tts'
+import { speakChar, speakChinese, speakLinesAsync, stopSpeak } from '@/lib/tts'
 import { cn } from '@/lib/utils'
 
 const LEVELS = [1, 2, 3, 4, 5, 6]
-/** Step 2 每天学的新字数 / Step 3 听音测试题数 */
-const LEARN_COUNT = 5
+/** 每日任务量：固定 6 字（最多 3 个复习字，其余由新字补足） */
+const DAILY_TOTAL = 6
+const DAILY_REVIEW = 3
+/** Step 3 听音测试题数 */
 const QUIZ_COUNT = 5
 
 /** Fisher-Yates 洗牌，返回新数组 */
@@ -35,6 +46,78 @@ function shuffle<T>(arr: T[]): T[] {
     ;[out[i], out[j]] = [out[j], out[i]]
   }
   return out
+}
+
+/** LocalStorage key：按「日期 + 级别」锁定当天任务，中途退出不重抽 */
+const dailyTaskKey = (date: string, level: number) => `literacy_daily_task:${date}:${level}`
+
+/** 当前 ISO 周标识（如 2026-W44），用来锁定「本周古诗」 */
+function currentWeekKey(date = new Date()): string {
+  const target = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()))
+  // ISO 周：周四所在的那一周归属该年
+  const dayNum = target.getUTCDay() || 7
+  target.setUTCDate(target.getUTCDate() + 4 - dayNum)
+  const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1))
+  const week = Math.ceil(((target.getTime() - yearStart.getTime()) / 86400000 + 1) / 7)
+  return `${target.getUTCFullYear()}-W${String(week).padStart(2, '0')}`
+}
+
+const weeklyPoemKey = (weekKey: string) => `weekly_poem_${weekKey}`
+type WeeklyPoem = { id: string; title: string; date: string }
+
+type LockedTask = { date: string; level: number; ids: string[]; reviewIds: string[] }
+/** 今日任务：chars 为 6 个字，reviewIds 标记其中哪些是复习字（其余为新学） */
+type DailyTask = { chars: LiteracyChar[]; reviewIds: string[] }
+
+/**
+ * 今日 6 字任务 = 到期复习字（mastery_level 低的优先，最多 3 个）+ 本级未学新字。
+ * 复习不足时用新字补满 6 个；生成后按日期写入 LocalStorage，当天再次进入沿用同一批字。
+ */
+async function loadTodayTask(level: number): Promise<DailyTask> {
+  const today = todayStr()
+  const key = dailyTaskKey(today, level)
+
+  try {
+    const cached = window.localStorage.getItem(key)
+    if (cached) {
+      const parsed = JSON.parse(cached) as Partial<LockedTask>
+      const ids = Array.isArray(parsed.ids)
+        ? parsed.ids.filter((id): id is string => typeof id === 'string')
+        : []
+      if (ids.length > 0) {
+        const rows = await fetchLiteracyCharsByIds(ids)
+        // 字表变动（删字）导致回读不全时才重新生成
+        if (rows.length === ids.length) {
+          const reviewIds = Array.isArray(parsed.reviewIds)
+            ? parsed.reviewIds.filter((id): id is string => typeof id === 'string')
+            : []
+          return { chars: rows, reviewIds: reviewIds.filter((id) => ids.includes(id)) }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[LiteracyDaily] 读取今日任务缓存失败:', err)
+  }
+
+  const reviewChars = await fetchDueReviewChars(today, DAILY_REVIEW)
+  const newChars = await fetchUnseenChars(level, Math.max(DAILY_TOTAL - reviewChars.length, 0))
+  const chars = [...reviewChars, ...newChars].slice(0, DAILY_TOTAL)
+  const reviewIds = reviewChars.map((c) => c.id)
+
+  try {
+    window.localStorage.setItem(
+      key,
+      JSON.stringify({
+        date: today,
+        level,
+        ids: chars.map((c) => c.id),
+        reviewIds,
+      } satisfies LockedTask),
+    )
+  } catch (err) {
+    console.warn('[LiteracyDaily] 写入今日任务缓存失败:', err)
+  }
+  return { chars, reviewIds }
 }
 
 /** Supabase 错误对象的 message/code 等属性不可枚举，需显式提取 */
@@ -48,49 +131,58 @@ function errMsg(err: unknown): string {
 
 type QuizQuestion = { target: LiteracyChar; options: LiteracyChar[] }
 
-/** Step 4 预置故事主题，点一下就把主题带给 AI */
-const STORY_TOPICS = ['🦖 恐龙探险', '🚀 太空旅行', '🐶 交朋友', '🌙 睡前童话', '🐰 小兔子找朋友']
-
-/** AI 返回的故事（绘本点读模式只取正文） */
-type StoryPayload = { story: string }
-
-/** AI 故事异常（解析失败 / 过短）时使用的备用故事，保证学习流程不中断 */
-const FALLBACK_STORY =
-  '小兔子去拔萝卜，遇到了好朋友。它们一起用力，拔出了大萝卜。好朋友要互相帮助。'
-
-/** 去掉空白与标点后的有效字数 */
-function storyCharCount(text: string): number {
-  return text.replace(/[\s，。！？、,.!?"'“”]/g, '').length
+/** Step 2 / Step 3 卡片上方的「复习 / 新学」标签 */
+function TaskBadge({ review }: { review: boolean }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-bold md:text-xs',
+        review ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700',
+      )}
+    >
+      {review ? '🔄 复习' : '🌟 新学'}
+    </span>
+  )
 }
 
-/** 故事太短（少于 20 字）时换成备用故事 */
-function ensureStory(text: string): string {
-  return storyCharCount(text) >= 20 ? text : FALLBACK_STORY
-}
+/** 汉字判断（标点 / 空白不参与古诗匹配） */
+const CJK = /[\u4e00-\u9fa5]/
 
-/** 解析故事接口 / 本地缓存，兼容旧版纯文本缓存与带 quiz 的 JSON */
-function parseStoryPayload(raw: string): StoryPayload {
-  const text = raw.trim()
-  try {
-    const parsed: unknown = JSON.parse(text)
-    if (parsed && typeof parsed === 'object') {
-      const obj = parsed as { story?: unknown }
-      if (typeof obj.story === 'string' && obj.story.trim()) {
-        return { story: ensureStory(obj.story.trim()) }
-      }
+/** 诗里出现过的汉字（去重） */
+function poemChars(poem: Poem): string[] {
+  const set = new Set<string>()
+  for (const line of poem.content) {
+    for (const char of Array.from(line)) {
+      if (CJK.test(char)) set.add(char)
     }
-  } catch {
-    // 不是 JSON，按纯文本故事兜底
   }
-  return { story: ensureStory(text) }
+  return Array.from(set)
 }
 
-/** 按 。！？ 切句，保留标点并去掉空句 */
-function splitStorySentences(story: string): string[] {
-  return story
-    .split(/(?<=[。！？!?])/)
-    .map((s) => s.trim())
-    .filter(Boolean)
+/**
+ * 选本周古诗：优先避开以前挑战过的诗（module = '识字古诗' 的 detail 里记着诗名），
+ * 在候选里选与孩子认识的字（去重）交集最多的一首；
+ * 交集全为 0 时，退化为字数最少（最简单）的一首兜底。
+ */
+function pickPoem(poems: Poem[], known: Set<string>, learnedTitles: Set<string>): Poem | null {
+  if (poems.length === 0) return null
+  // 优先避开以前挑战过的诗；全学过时退回全量，保证仍有诗可读
+  const unlearned = poems.filter((poem) => !learnedTitles.has(poem.title))
+  const pool = unlearned.length > 0 ? unlearned : poems
+  const scored = pool.map((poem) => ({
+    poem,
+    hits: poemChars(poem).filter((char) => known.has(char)).length,
+  }))
+  const max = Math.max(...scored.map((item) => item.hits))
+  if (max > 0) {
+    const top = scored.filter((item) => item.hits === max)
+    return top[Math.floor(Math.random() * top.length)].poem
+  }
+  // 全都不认识：选汉字最少（最简单）的一首
+  const totals = pool.map((poem) => ({ poem, total: poemChars(poem).length }))
+  const min = Math.min(...totals.map((item) => item.total))
+  const simplest = totals.filter((item) => item.total === min)
+  return simplest[Math.floor(Math.random() * simplest.length)].poem
 }
 
 /**
@@ -138,7 +230,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   const [currentWordIndex, setCurrentWordIndex] = useState(0)
   /** 子页面：learn = 学字卡，quiz = 找一找 */
   const [subStep, setSubStep] = useState<'learn' | 'quiz'>('learn')
-  /** 5 个字全部学完并测完 */
+  /** 今日 6 字全部学完并测完 */
   const [learnDone, setLearnDone] = useState(false)
   const [flipped, setFlipped] = useState(false)
   /** 找一找：本题的候选字（目标字 + 3 个干扰字） */
@@ -152,6 +244,11 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   /** 听音选字：答对后防止连点的标记 */
   const answeredRef = useRef(false)
 
+  /** 今日任务里属于复习字的 id（其余为新学字），用于 Step 2 / Step 3 标签 */
+  const [reviewCharIds, setReviewCharIds] = useState<string[]>([])
+  /** Step 3 每个字的首次作答结果：true = 第一次就选对 */
+  const quizResultsRef = useRef<Map<string, boolean>>(new Map())
+
   // ── Step 3：听音识字 ──
   const [questions, setQuestions] = useState<QuizQuestion[]>([])
   const [qIndex, setQIndex] = useState(0)
@@ -160,31 +257,25 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   const [answered, setAnswered] = useState(false)
   const [firstTryCorrect, setFirstTryCorrect] = useState(0)
 
-  // ── Step 4：AI 故事 + 结算打卡 ──
+  // ── Step 4：古诗跟读 + 填空 + 结算打卡 ──
   const [checkingIn, setCheckingIn] = useState(false)
   const [earnedStars, setEarnedStars] = useState<number | null>(null)
-  /** 选定的故事主题；为空时先展示主题选择，不请求 AI */
-  const [storyTopic, setStoryTopic] = useState('')
-  /** 自定义主题输入 */
-  const [customTopic, setCustomTopic] = useState('')
-  /** 每次选主题自增，保证重复选同一主题也能重新生成 */
-  const [storyNonce, setStoryNonce] = useState(0)
-  const [story, setStory] = useState('')
-  const [storyLoading, setStoryLoading] = useState(false)
-  const [storyError, setStoryError] = useState('')
-  /** 整篇故事听完（或点了「我读完了」）后解锁打卡 */
-  const [storyListened, setStoryListened] = useState(false)
-  const [listening, setListening] = useState(false)
-  /** 指读：当前正在朗读的句子下标 */
-  const [activeSentence, setActiveSentence] = useState(-1)
-  /** 逐句 TTS 的会话代际号，切句/离开页面时作废旧回调 */
-  const listenTokenRef = useRef(0)
-  const sentenceRefs = useRef<(HTMLParagraphElement | null)[]>([])
-  /** 防止同一主题重复请求故事 */
-  const storyRequestedRef = useRef(false)
+  /** 跨级别已认识的字（child_mastery.status = 'mastered'） */
+  const [knownChars, setKnownChars] = useState<string[]>([])
+  /** 以前挑战过的古诗名（用于本周推荐避重） */
+  const [learnedPoemTitles, setLearnedPoemTitles] = useState<string[]>([])
+  const [poems, setPoems] = useState<Poem[]>([])
+  const [poemLoading, setPoemLoading] = useState(true)
+  /** 今日匹配到的古诗 */
+  const [poem, setPoem] = useState<Poem | null>(null)
+  /** 在古诗组件里完成「朗读 + 填空/排序」后才能打卡 */
+  const [poemCompleted, setPoemCompleted] = useState(false)
 
-  /** 故事按标点切句，用于逐句指读与高亮 */
-  const storySentences = useMemo(() => splitStorySentences(story), [story])
+  /** 孩子认识的字：已掌握的 + 今天 Step 2 刚学的（Step 4 高亮以此为准） */
+  const knownCharSet = useMemo(
+    () => new Set([...knownChars, ...todayLearnChars.map((c) => c.char)]),
+    [knownChars, todayLearnChars],
+  )
 
   const load = useCallback(async (lv: number) => {
     setLoading(true)
@@ -194,9 +285,20 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     setTodayLearnChars([])
     setQuestions([])
     try {
-      const [rows, map] = await Promise.all([fetchLiteracyCharsByLevel(lv), fetchMasteryMap()])
+      const [rows, map, task] = await Promise.all([
+        fetchLiteracyCharsByLevel(lv),
+        fetchMasteryMap(),
+        loadTodayTask(lv),
+      ])
       setChars(rows)
       setMastery(map)
+      // 今日任务由「复习 + 新学」混合生成并锁定，不再从摸底结果里随机抽
+      setTodayLearnChars(task.chars)
+      setReviewCharIds(task.reviewIds)
+      setCurrentWordIndex(0)
+      setSubStep('learn')
+      setLearnDone(false)
+      setFlipped(false)
     } catch (err) {
       console.error('[LiteracyDaily] 加载字库失败:', err)
       setError(`加载失败：${err instanceof Error ? err.message : String(err)}`)
@@ -291,30 +393,12 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     askFind(currentCard)
   }
 
-  /** 从摸底不认识字里随机抽 5 个；不足则用本级未掌握的字补足 */
+  /** 进入 Step 2：直接使用当天已锁定的「3 复习 + 3 新」任务，不再随机抽字 */
   const enterStep2 = () => {
-    // 从 Step 2 退回 Step 1 再前进时保留已抽好的新字与进度
-    if (todayLearnChars.length > 0) {
-      setStep(2)
-      const c = todayLearnChars[currentWordIndex]
-      if (c) announceCard(c)
-      return
-    }
-    let picked = shuffle(unknownChars).slice(0, LEARN_COUNT)
-    if (picked.length < LEARN_COUNT) {
-      const candidates = chars.filter(
-        (c) => mastery[c.id] !== 'mastered' && !picked.some((p) => p.id === c.id),
-      )
-      picked = [...picked, ...shuffle(candidates)].slice(0, LEARN_COUNT)
-    }
-    setTodayLearnChars(picked)
-    setCurrentWordIndex(0)
-    setSubStep('learn')
-    setLearnDone(false)
-    setFlipped(false)
     setStep(2)
-    // 进入学字卡：在按钮点击上下文内播报第一张字卡的词图语音
-    if (picked[0]) announceCard(picked[0])
+    const c = todayLearnChars[currentWordIndex]
+    // 在按钮点击上下文内播报当前字卡，规避 iPad 自动播放拦截；找一找页面不播报
+    if (c && subStep === 'learn' && !learnDone) announceCard(c)
   }
 
   const currentCard = todayLearnChars[currentWordIndex]
@@ -392,22 +476,23 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
 
   // ──────────────── Step 3 逻辑 ────────────────
 
-  /** 题库 = 今天学的 5 个新字 + 本级已认识的字，随机抽 5 题，各配 3 个干扰项 */
+  /** 题库 = 今日 6 个字（3 复习 + 3 新），每个字都要考到，各配 3 个干扰项 */
   const enterStep3 = () => {
     // 从 Step 3 退回 Step 2 再前进时不重新出题，保留已答进度
     if (questions.length > 0) {
       setStep(3)
       return
     }
+    quizResultsRef.current = new Map()
     const masteredPool = chars.filter(
       (c) => mastery[c.id] === 'mastered' && !todayLearnChars.some((t) => t.id === c.id),
     )
-    let targets = shuffle([...todayLearnChars, ...shuffle(masteredPool)]).slice(0, QUIZ_COUNT)
-    // 极端情况：新字和已认识字都不够 5 个，用本级其他字补齐
-    if (targets.length < QUIZ_COUNT) {
-      const rest = chars.filter((c) => !targets.some((t) => t.id === c.id))
-      targets = [...targets, ...shuffle(rest)].slice(0, QUIZ_COUNT)
-    }
+    let targets =
+      todayLearnChars.length > 0
+        ? todayLearnChars.slice()
+        : shuffle(masteredPool).slice(0, QUIZ_COUNT)
+    // 极端情况：今日任务为空且本级也没有已认识的字，用本级其他字补齐
+    if (targets.length === 0) targets = shuffle(chars).slice(0, QUIZ_COUNT)
     const qs: QuizQuestion[] = targets.map((target) => {
       const distractors = shuffle(chars.filter((c) => c.char !== target.char)).slice(0, 3)
       return { target, options: shuffle([target, ...distractors]) }
@@ -433,6 +518,8 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   const answer = async (opt: LiteracyChar) => {
     if (!currentQ || answeredRef.current || wrongIds.has(opt.id)) return
     if (opt.id === currentQ.target.id) {
+      // 记录该字的首次作答结果：之前点过错就记为「不是一次答对」
+      quizResultsRef.current.set(currentQ.target.id, wrongIds.size === 0)
       if (wrongIds.size === 0) setFirstTryCorrect((n) => n + 1)
       answeredRef.current = true
       setAnswered(true)
@@ -444,6 +531,9 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
         setAnswered(false)
       }
     } else {
+      if (!quizResultsRef.current.has(currentQ.target.id)) {
+        quizResultsRef.current.set(currentQ.target.id, false)
+      }
       setWrongIds((prev) => new Set(prev).add(opt.id))
       // 点错时读出被点的字，孩子能听到自己选了什么
       speakCard(opt)
@@ -452,164 +542,127 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
 
   // ──────────────── Step 4 逻辑 ────────────────
 
-  /** 今天新学的字（红色高亮） */
-  const todayCharSet = new Set(todayLearnChars.map((c) => c.char))
-  /** 本级已认识的字（绿色高亮），让孩子看到故事里有自己认识的字 */
-  const masteredCharSet = new Set(
-    chars.filter((c) => mastery[c.id] === 'mastered').map((c) => c.char),
-  )
-
-  /** 选好主题后重置故事状态并触发重新生成 */
-  const chooseTopic = (topic: string) => {
-    const next = topic.trim().slice(0, 20)
-    if (!next) return
-    stopSpeak()
-    setListening(false)
-    setStory('')
-    setStoryError('')
-    setStoryListened(false)
-    setActiveSentence(-1)
-    storyRequestedRef.current = false
-    setStoryTopic(next)
-    setStoryNonce((n) => n + 1)
-  }
-
-  /** 回到主题选择，换个故事 */
-  const changeTopic = () => {
-    listenTokenRef.current += 1
-    stopSpeak()
-    setListening(false)
-    setStory('')
-    setStoryError('')
-    setStoryListened(false)
-    setActiveSentence(-1)
-    setStoryTopic('')
-    storyRequestedRef.current = false
-  }
-
-  // 选定主题后才生成故事：先查 daily_contents 缓存（按主题区分），没有再调 AI
+  /** 拉诗库与跨级别已认识的字（诗库不随级别变化，只请求一次） */
   useEffect(() => {
-    if (step !== 4 || !storyTopic || storyRequestedRef.current) return
-    storyRequestedRef.current = true
     let cancelled = false
     ;(async () => {
-      setStoryLoading(true)
-      setStoryError('')
-      setStory('')
-      setStoryListened(false)
-      setActiveSentence(-1)
-      const dateKey = todayDateKey()
-      // 不同主题各自缓存，避免换主题仍拿到旧故事
-      const cacheType = `literacy_story:${storyTopic.slice(0, 10)}`
       try {
-        const cached = await fetchDailyContent(cacheType, dateKey)
-        if (cached) {
-          const parsed = parseStoryPayload(cached)
-          if (!cancelled) setStory(parsed.story)
-          return
-        }
-        const res = await fetch('/api/generate-story', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            topic: storyTopic,
-            extraChars: todayLearnChars.map((c) => c.char),
+        const [poemRows, mastered, learnedTitles] = await Promise.all([
+          fetchPoems(),
+          fetchMasteredChars(),
+          // 表或 detail 字段尚未就绪时不阻塞古诗推荐
+          fetchLearnedPoemTitles().catch((err: unknown) => {
+            console.warn('[LiteracyDaily] 读取已学古诗失败:', errMsg(err))
+            return [] as string[]
           }),
-        })
-        const data: unknown = await res.json().catch(() => null)
-        const storyText =
-          data && typeof data === 'object' ? (data as { story?: unknown }).story : undefined
-        if (!res.ok || typeof storyText !== 'string' || !storyText.trim()) {
-          const apiError =
-            data && typeof data === 'object' ? (data as { error?: unknown }).error : undefined
-          throw new Error(typeof apiError === 'string' ? apiError : `生成失败（HTTP ${res.status}）`)
-        }
-        const finalStory = ensureStory(storyText.trim())
-        if (!cancelled) setStory(finalStory)
-        // 异常过短的故事不写缓存，下次进入还能重新生成
-        if (finalStory === storyText.trim()) {
-          // 写缓存失败不影响展示
-          saveDailyContent(cacheType, dateKey, finalStory).catch((err) =>
-            console.warn('[LiteracyDaily] 故事缓存写入失败:', err),
-          )
-        }
+        ])
+        if (cancelled) return
+        setPoems(poemRows)
+        setKnownChars(mastered)
+        setLearnedPoemTitles(learnedTitles)
       } catch (err) {
-        console.error('[LiteracyDaily] 加载故事失败:', err)
-        if (!cancelled) {
-          setStoryError(err instanceof Error ? err.message : '生成故事失败，请稍后重试')
-        }
+        console.error('[LiteracyDaily] 加载古诗失败:', err)
+        if (!cancelled) setError(`加载古诗失败：${errMsg(err)}`)
       } finally {
-        if (!cancelled) setStoryLoading(false)
+        if (!cancelled) setPoemLoading(false)
       }
     })()
     return () => {
       cancelled = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, storyTopic, storyNonce])
+  }, [])
 
-  /** 指读：逐句朗读，读完一句再读下一句，高亮并滚动到当前句 */
-  const listenStory = useCallback(() => {
-    if (storySentences.length === 0) return
-    const token = ++listenTokenRef.current
+  /** 记忆结果已回写（同一次学习流程只回写一次，防止来回切步骤重复加等级） */
+  const memoryAppliedRef = useRef(false)
+
+  /** 进入 Step 4：先把 Step 3 的作答结果回写 child_mastery，再清空古诗重新匹配 */
+  const enterStep4 = async () => {
     stopSpeak()
-    setListening(true)
-    setActiveSentence(0)
+    setPoemCompleted(false)
+    setPoem(null)
 
-    const speakAt = (index: number) => {
-      if (listenTokenRef.current !== token) return
-      if (index >= storySentences.length) {
-        setListening(false)
-        setStoryListened(true)
+    if (!memoryAppliedRef.current) {
+      try {
+        await Promise.all(
+          todayLearnChars.map(async (c) => {
+            const firstTry = quizResultsRef.current.get(c.id)
+            // 没被考到的字（极端情况）不更新记忆
+            if (firstTry === undefined) return
+            await applyQuizResult(c.id, firstTry)
+          }),
+        )
+        memoryAppliedRef.current = true
+      } catch (err) {
+        console.error('[LiteracyDaily] 回写记忆数据失败:', errMsg(err), err)
+        setError(`记忆数据保存失败：${errMsg(err)}`)
+      }
+    }
+    setStep(4)
+  }
+
+  /**
+   * 选本周古诗（一周锁定一首）：
+   * 1. 先读 localStorage `weekly_poem_${weekKey}`，命中则按诗 ID 回读数据库；
+   * 2. 未命中或有变化时按「认识字交集最多 + 避开已学」重新挑，并写入本周缓存；
+   * 3. 诗库/认识字/已学诗名都就绪后才算，避免用到半成品数据。
+   */
+  useEffect(() => {
+    if (step !== 4 || poem || poemLoading) return
+    let cancelled = false
+    ;(async () => {
+      const weekKey = currentWeekKey()
+      try {
+        const cached = window.localStorage.getItem(weeklyPoemKey(weekKey))
+        if (cached) {
+          const parsed = JSON.parse(cached) as Partial<WeeklyPoem>
+          if (typeof parsed.id === 'string') {
+            const row = await fetchPoemById(parsed.id).catch((err: unknown) => {
+              console.warn('[LiteracyDaily] 回读本周古诗失败:', errMsg(err))
+              return null
+            })
+            if (cancelled) return
+            if (row) {
+              setPoem(row)
+              return
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[LiteracyDaily] 读取本周古诗缓存失败:', errMsg(err))
+      }
+
+      const picked = pickPoem(poems, knownCharSet, new Set(learnedPoemTitles))
+      if (cancelled) return
+      if (!picked) {
+        setPoem(null)
         return
       }
-      setActiveSentence(index)
-      sentenceRefs.current[index]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-      speakChinese(storySentences[index], () => {
-        if (listenTokenRef.current !== token) return
-        speakAt(index + 1)
-      })
+      try {
+        window.localStorage.setItem(
+          weeklyPoemKey(weekKey),
+          JSON.stringify({ id: picked.id, title: picked.title, date: todayStr() } satisfies WeeklyPoem),
+        )
+      } catch (err) {
+        console.warn('[LiteracyDaily] 写入本周古诗缓存失败:', errMsg(err))
+      }
+      setPoem(picked)
+    })()
+    return () => {
+      cancelled = true
     }
-    speakAt(0)
-  }, [storySentences])
-
-  /** 我读完了：不等朗读播完，直接标记已读并解锁打卡 */
-  const markStoryRead = () => {
-    listenTokenRef.current += 1
-    stopSpeak()
-    setListening(false)
-    setStoryListened(true)
-  }
-
-  /** 点句子自主阅读：打断上一句，朗读被点的那一句并高亮 */
-  const speakSentence = (index: number) => {
-    const sentence = storySentences[index]
-    if (!sentence) return
-    const token = ++listenTokenRef.current
-    stopSpeak()
-    setListening(true)
-    setActiveSentence(index)
-    sentenceRefs.current[index]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-    speakChinese(sentence, () => {
-      if (listenTokenRef.current !== token) return
-      setListening(false)
-      setStoryListened(true)
-    })
-  }
+  }, [step, poem, poemLoading, poems, knownCharSet, learnedPoemTitles])
 
   /** 上一步：语音打断并退回上一个环节（各步骤状态保留，回到下一步可继续） */
   const goBackStep = () => {
     if (step <= 1) return
     stopSpeak()
-    setListening(false)
     setError('')
     setStep(step - 1)
   }
 
-  /** 重新开始：清空向导各步骤状态 */
+  /** 重新开始：重置步骤进度，但保留当天已锁定的 6 字任务 */
   const resetWizard = () => {
     setUnknownChars([])
-    setTodayLearnChars([])
     setCurrentWordIndex(0)
     setSubStep('learn')
     setLearnDone(false)
@@ -623,28 +676,23 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     setWrongIds(new Set())
     setAnswered(false)
     setFirstTryCorrect(0)
-    setStory('')
-    setStoryError('')
-    setStoryListened(false)
-    setListening(false)
-    setActiveSentence(-1)
-    listenTokenRef.current += 1
+    setPoem(null)
+    setPoemCompleted(false)
     // 重置结算状态：否则二次进入 Step 4 时 earnedStars 仍非 null，
-    // 会把「听故事 / 重新播放 / 完成打卡」整条操作栏一起隐藏
+    // 会导致打卡按钮一直显示「今日已打卡」
     setEarnedStars(null)
     setCheckingIn(false)
-    setStoryTopic('')
-    setCustomTopic('')
-    storyRequestedRef.current = false
     setStep(1)
   }
 
   const handleCheckin = async () => {
     if (checkingIn || earnedStars !== null) return
+    // 在古诗组件里完成朗读 + 填空/排序才允许打卡
+    if (!poemCompleted) return
     setCheckingIn(true)
     setError('')
     try {
-      // 服务端没查到识字任务时，这里再兜底补建一次，避免「读完故事却打不了卡」
+      // 服务端没查到识字任务时，这里再兜底补建一次，避免「学完却打不了卡」
       let id = taskId
       if (!id) {
         id = await ensureModuleTaskIdBySubjectName({
@@ -657,6 +705,43 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
 
       const stars = await handleGameCheckin(id, questions.length, firstTryCorrect, isParent)
       setEarnedStars(stars)
+      // 打卡成功：语音播报今日总结
+      stopSpeak()
+      speakChinese(summaryText)
+      // 学习得分记录；表未建好时只记日志，不影响打卡
+      try {
+        await insertLearningRecord({
+          recordDate: todayStr(),
+          subject: '语文',
+          module: '识字乐园',
+          newCount,
+          reviewCount,
+          totalCount: todayLearnChars.length,
+          firstTryCorrect,
+          score: stars,
+        })
+      } catch (err) {
+        console.warn('[LiteracyDaily] 写入 learning_records 失败:', errMsg(err), err)
+      }
+
+      // 记录本周挑战过的古诗（诗名写进 detail，供下周推荐避重）；失败不影响打卡
+      if (poem) {
+        try {
+          await insertLearningRecord({
+            recordDate: todayStr(),
+            subject: '语文',
+            module: '识字古诗',
+            newCount: 0,
+            reviewCount: 0,
+            totalCount: poemChars(poem).length,
+            firstTryCorrect: 0,
+            score: stars,
+            detail: poem.title,
+          })
+        } catch (err) {
+          console.warn('[LiteracyDaily] 写入古诗学习记录失败:', errMsg(err), err)
+        }
+      }
     } catch (err) {
       console.error('[LiteracyDaily] 打卡失败:', err)
       setError(`打卡失败：${err instanceof Error ? err.message : String(err)}`)
@@ -666,6 +751,12 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   }
 
   // ──────────────── 渲染 ────────────────
+
+  /** 今日复习字 / 新学字数量（任务锁定后恒定） */
+  const reviewCount = todayLearnChars.filter((c) => reviewCharIds.includes(c.id)).length
+  const newCount = todayLearnChars.length - reviewCount
+  const summaryText = `今天新学了 ${newCount} 个字，复习了 ${reviewCount} 个字，你太棒啦`
+  const canCheckin = poemCompleted
 
   return (
     <>
@@ -792,11 +883,11 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                 <p className="text-sm text-muted-foreground">可以直接进入听音识字</p>
               </div>
             ) : learnDone ? (
-              /* 5 个字学完并测完：通关动画 */
+              /* 今日任务学完并测完：通关动画 */
               <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 rounded-3xl border-2 border-emerald-300 bg-emerald-50/60 text-center">
                 <span className="animate-bounce text-7xl md:text-9xl">🎉</span>
                 <p className="text-2xl font-bold text-emerald-700 md:text-4xl">
-                  5 个字全部学会啦！
+                  {todayLearnChars.length} 个字全部学会啦！
                 </p>
                 <p className="text-sm text-muted-foreground md:text-lg">
                   准备好去「听音识字」挑战了吗？
@@ -805,9 +896,12 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
             ) : subStep === 'learn' ? (
               /* ── 子页面 A：学字卡（一张巨卡吃满全屏） ── */
               <>
-                <p className="shrink-0 pb-1 text-center text-xs text-muted-foreground md:text-sm">
-                  第 {currentWordIndex + 1} / {todayLearnChars.length} 个字 · 看看它，记住它
-                </p>
+                <div className="flex shrink-0 items-center justify-center gap-2 pb-1">
+                  <TaskBadge review={reviewCharIds.includes(currentCard.id)} />
+                  <p className="text-center text-xs text-muted-foreground md:text-sm">
+                    第 {currentWordIndex + 1} / {todayLearnChars.length} 个字 · 看看它，记住它
+                  </p>
+                </div>
                 <div className="relative min-h-0 w-full flex-1 rounded-3xl [perspective:1400px]">
                   <div
                     role="button"
@@ -905,6 +999,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
               /* ── 子页面 B：听音找字（上半屏巨大 Emoji 提示，下半屏 4 个巨字选项） ── */
               <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-between gap-2 md:gap-3">
                 <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-1 md:gap-2">
+                  <TaskBadge review={reviewCharIds.includes(currentCard.id)} />
                   {/* 词图占满上半屏剩余空间；按钮放在外层，永远不会被 Emoji 挤掉 */}
                   <div className="flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden">
                     <span
@@ -979,7 +1074,10 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
         {/* ════════ Step 3：听音识字 ════════ */}
         {step === 3 && currentQ && (
           <div className="flex min-h-0 w-full flex-1 flex-col gap-3">
-            <p className="text-center text-sm text-muted-foreground">
+            <p className="flex flex-wrap items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+              {todayLearnChars.some((c) => c.id === currentQ.target.id) && (
+                <TaskBadge review={reviewCharIds.includes(currentQ.target.id)} />
+              )}
               第 {qIndex + 1} / {questions.length} 题 · 听读音，选出正确的字
             </p>
             <button
@@ -1014,197 +1112,43 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
           </div>
         )}
 
-        {/* ════════ Step 4：AI 专属故事（先选主题，听完才能打卡） ════════ */}
+        {/* ════════ Step 4：古诗互动（朗读 + 排序/填空），完成后才能打卡 ════════ */}
         {step === 4 && (
-          <div className="mx-auto flex h-[70vh] max-h-full w-full max-w-6xl flex-none flex-col items-center gap-2 overflow-hidden rounded-2xl border bg-card p-3 md:gap-3 md:p-5">
-            <div className="flex w-full shrink-0 items-center gap-2">
+          <div className="flex h-full min-h-0 w-full max-w-4xl flex-1 flex-col overflow-hidden">
+            <div className="flex w-full shrink-0 items-center">
               <button
                 type="button"
                 onClick={goBackStep}
-                className="flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/40 md:text-sm"
+                className="flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted/40 md:text-sm"
               >
                 <ArrowLeft className="size-3.5" aria-hidden="true" />
                 上一步
               </button>
-              <p className="flex min-w-0 flex-1 items-center justify-center gap-2 text-base font-bold md:text-lg">
-                <BookOpenText className="size-5 shrink-0 text-primary" aria-hidden="true" />
-                <span className="truncate">
-                  {storyTopic ? `今天的故事 · ${storyTopic}` : '今天想听什么故事？'}
-                </span>
-              </p>
-              {storyTopic ? (
-                <button
-                  type="button"
-                  onClick={changeTopic}
-                  className="shrink-0 rounded-full border px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/40 md:text-sm"
-                >
-                  换个主题
-                </button>
-              ) : (
-                <span className="w-12 shrink-0 md:w-16" aria-hidden="true" />
-              )}
             </div>
 
-            {!storyTopic ? (
-              /* 主题选择：不选主题就不请求 AI */
-              <div className="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-4 overflow-y-auto">
-                <div className="flex flex-wrap items-center justify-center gap-2 md:gap-3">
-                  {STORY_TOPICS.map((topic) => (
-                    <button
-                      key={topic}
-                      type="button"
-                      onClick={() => chooseTopic(topic)}
-                      className="rounded-full border-2 border-amber-300 bg-amber-50/80 px-4 py-2 text-base font-bold transition-all hover:bg-amber-100 active:scale-95 md:px-6 md:py-3 md:text-xl"
-                    >
-                      {topic}
-                    </button>
-                  ))}
-                </div>
-                <div className="flex w-full max-w-sm gap-2">
-                  <input
-                    value={customTopic}
-                    onChange={(e) => setCustomTopic(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') chooseTopic(customTopic)
-                    }}
-                    maxLength={20}
-                    placeholder="或者输入一个主题…"
-                    aria-label="自定义故事主题"
-                    className="h-11 min-w-0 flex-1 rounded-xl border bg-background px-3 text-sm md:h-12 md:text-base"
-                  />
-                  <Button
-                    className="h-11 shrink-0 md:h-12"
-                    disabled={!customTopic.trim()}
-                    onClick={() => chooseTopic(customTopic)}
-                  >
-                    开始
-                  </Button>
-                </div>
-                <p className="text-center text-xs text-muted-foreground">
-                  故事里会把你认识的字高亮出来
-                </p>
-              </div>
-            ) : storyLoading ? (
-              <p className="py-10 text-center text-sm text-muted-foreground">
-                老师正在为你写关于「{storyTopic}」的故事…
+            {poemLoading ? (
+              <p className="flex flex-1 items-center justify-center text-center text-sm text-muted-foreground">
+                正在加载古诗…
               </p>
-            ) : storyError ? (
-              <div className="flex flex-col items-center gap-3 py-6 text-center">
-                <p className="text-sm text-destructive">{storyError}</p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      storyRequestedRef.current = false
-                      setStoryNonce((n) => n + 1)
-                    }}
-                  >
-                    重试
-                  </Button>
-                  <Button variant="ghost" onClick={changeTopic}>
-                    换个主题
-                  </Button>
-                </div>
-              </div>
-            ) : story ? (
-              <>
-                {/* 绘本点读：句子逐个点击朗读；已认识的字正常显示，生字浅红加虚线下划线 */}
-                <div className="mx-auto flex max-h-[50vh] min-h-0 w-full max-w-5xl flex-1 flex-col items-center justify-center gap-2 overflow-y-auto rounded-2xl bg-amber-50/60 px-4 py-2 md:max-h-[60vh] md:gap-3 md:px-6">
-                  {storySentences.map((sentence, si) => (
-                    <p
-                      key={si}
-                      ref={(el) => {
-                        sentenceRefs.current[si] = el
-                      }}
-                      onClick={() => speakSentence(si)}
-                      className={cn(
-                        'w-full cursor-pointer rounded-xl px-2 text-2xl font-bold leading-relaxed tracking-wide transition-colors md:text-3xl lg:text-4xl',
-                        si === activeSentence && 'bg-yellow-100',
-                      )}
-                    >
-                      {[...sentence].map((ch, ci) =>
-                        masteredCharSet.has(ch) || todayCharSet.has(ch) ? (
-                          <span key={ci}>{ch}</span>
-                        ) : (
-                          <span
-                            key={ci}
-                            className="text-red-400 underline decoration-dotted underline-offset-4"
-                          >
-                            {ch}
-                          </span>
-                        ),
-                      )}
-                    </p>
-                  ))}
-                </div>
-
-                {/* 紧凑操作条：听故事/重新播放常驻（打卡后也能反复听）；
-                    仅「我读完了 / 完成打卡 / 今日已打卡」随进度与打卡状态切换 */}
-                <div className="flex w-full shrink-0 items-center gap-2">
-                  <Button
-                    variant="outline"
-                    className="flex-1 py-2 text-sm md:text-base"
-                    onClick={listenStory}
-                  >
-                    <Volume2 className="size-4" aria-hidden="true" />
-                    {listening ? '朗读中…' : storyListened ? '重新播放' : '开始听故事'}
-                  </Button>
-                  {earnedStars !== null ? (
-                    <span className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-emerald-50 py-2 text-sm font-semibold text-emerald-700 md:text-base">
-                      <CheckCircle2 className="size-4" aria-hidden="true" />
-                      今日已打卡
-                    </span>
-                  ) : storyListened ? (
-                    <Button
-                      className="flex-1 py-2 text-sm md:text-base"
-                      onClick={handleCheckin}
-                      disabled={checkingIn}
-                    >
-                      <CheckCircle2 className="size-4" aria-hidden="true" />
-                      {checkingIn ? '打卡中…' : '完成打卡'}
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="ghost"
-                      className="flex-1 py-2 text-sm md:text-base"
-                      onClick={markStoryRead}
-                    >
-                      我读完了
-                    </Button>
-                  )}
-                </div>
-              </>
-            ) : null}
-
-            {earnedStars !== null && (
-              /* 结算提示 + 紧凑操作条 */
-              <div className="flex w-full shrink-0 flex-col items-center gap-3 rounded-2xl bg-emerald-50 p-4 text-center">
-                <p className="text-base font-bold text-emerald-800 md:text-lg">
-                  打卡成功！今天学会了 {todayLearnChars.length} 个新字，等待家长确认后就能获得 {earnedStars} 颗星星啦 ⭐
-                </p>
-                <div className="flex w-full gap-2">
-                  <Button
-                    variant="outline"
-                    className="flex-1 py-2 text-sm md:text-base"
-                    onClick={resetWizard}
-                  >
-                    重新开始
-                  </Button>
-                  <Button
-                    className="flex-1 py-2 text-sm md:text-base"
-                    onClick={() => router.push('/')}
-                  >
-                    返回主页
-                  </Button>
-                </div>
+            ) : !poem ? (
+              <p className="flex flex-1 items-center justify-center px-4 text-center text-sm text-muted-foreground">
+                还没有古诗数据，请先执行 scripts/seed-poems.sql 导入诗库
+              </p>
+            ) : (
+              <div className="flex min-h-0 w-full flex-1 flex-col">
+                <PoemPlayground
+                  poem={poem}
+                  knownChars={Array.from(knownCharSet)}
+                  compact
+                  onComplete={() => setPoemCompleted(true)}
+                />
               </div>
             )}
           </div>
         )}
       </div>
 
-      {/* 底部操作栏（Step 1–3）：统一容器类，永远吸附在内容区下方；
-          Step 4 的按钮已收进故事卡片内部底边，不再占用页面底部空间 */}
+      {/* 底部操作栏：统一容器类，永远吸附在内容区下方 */}
       {step === 1 && (
         <div className="mx-auto flex w-full max-w-2xl flex-none gap-4 px-4 pb-8 pt-4 lg:max-w-4xl">
           <Button
@@ -1278,11 +1222,59 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
           <Button
             className="flex-1 py-4 text-base md:text-lg"
             disabled={!(answered && qIndex + 1 >= questions.length)}
-            onClick={() => setStep(4)}
+            onClick={enterStep4}
           >
-            下一步：选故事主题
+            下一步：古诗跟读
             <ArrowRight className="size-4" aria-hidden="true" />
           </Button>
+        </div>
+      )}
+
+      {step === 4 && (
+        <div className="mx-auto flex w-full max-w-2xl flex-none flex-col gap-2 px-4 pb-8 pt-4 lg:max-w-4xl">
+          {earnedStars !== null ? (
+            /* 打卡成功：温馨总结 + 等待家长审核 */
+            <div className="flex flex-col items-center gap-2">
+              <p className="text-center text-base font-bold text-emerald-700 md:text-lg">
+                {summaryText}！
+              </p>
+              <p className="text-center text-sm font-bold text-emerald-700 md:text-base">
+                <CheckCircle2 className="mr-1 inline size-4 align-[-2px]" aria-hidden="true" />
+                打卡成功！等待家长审核后就能获得 {earnedStars} 颗星星啦 ⭐
+              </p>
+              <div className="flex w-full gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1 py-3 text-sm md:text-base"
+                  onClick={resetWizard}
+                >
+                  重新开始
+                </Button>
+                <Button
+                  className="flex-1 py-3 text-sm md:text-base"
+                  onClick={() => router.push('/')}
+                >
+                  返回主页
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <Button
+                className="w-full py-4 text-base font-bold md:text-lg"
+                disabled={!canCheckin || checkingIn}
+                onClick={handleCheckin}
+              >
+                <CheckCircle2 className="size-4" aria-hidden="true" />
+                {checkingIn ? '打卡中…' : '完成学习打卡'}
+              </Button>
+              {!canCheckin && (
+                <p className="text-center text-[11px] text-muted-foreground md:text-xs">
+                  先在古诗里完成朗读和排序或填空，就能打卡啦
+                </p>
+              )}
+            </>
+          )}
         </div>
       )}
 

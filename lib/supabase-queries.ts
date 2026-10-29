@@ -1,6 +1,7 @@
 import { requireSupabase } from '@/lib/supabase'
 import { resolveFamilyId, type UserRole } from '@/lib/family'
 import { shiftDate, todayStr } from '@/lib/dates'
+import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
 import type { Weekday } from '@/lib/mock-data'
 
@@ -882,22 +883,184 @@ export async function countMasteredChars(): Promise<number> {
   return count ?? 0
 }
 
-/** 写入掌握状态：按 char_id 唯一约束 upsert，有记录则更新，没有则插入 */
+/** 间隔复习节奏：掌握等级 1..6 对应的下次复习间隔（天） */
+const REVIEW_INTERVAL_DAYS = [1, 3, 7, 15, 30, 60]
+
+/** 写入掌握状态：按 char_id 唯一约束 upsert，同时维护复习等级与下次复习日期 */
 export async function upsertMastery(charId: string, status: MasteryStatus) {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   // char_id 上有全局唯一约束，必须用 onConflict upsert：
   // 「先查再插」在旧记录 family_id 为空/属其他家庭时会查不到而误走 insert，撞唯一约束
+  const { data: existing, error: readError } = await supabase
+    .from('child_mastery')
+    .select('mastery_level')
+    .eq('char_id', charId)
+    .maybeSingle()
+  if (readError) throw readError
+
+  const currentLevel = Number(existing?.mastery_level ?? 0)
+  // 手动标记不改变已有的复习等级：认识至少算 1 级，不认识打回 1 级
+  const masteryLevel = status === 'mastered' ? Math.max(currentLevel, 1) : 1
+  const intervalDays = REVIEW_INTERVAL_DAYS[masteryLevel - 1] ?? 1
+
   const { error } = await supabase.from('child_mastery').upsert(
     {
       char_id: charId,
       status,
+      mastery_level: masteryLevel,
+      next_review_date: shiftDate(todayStr(), intervalDays),
       updated_at: new Date().toISOString(),
       ...familyPatch(familyId),
     },
     { onConflict: 'char_id' },
   )
   if (error) throw error
+}
+
+/**
+ * Step 3 听音结果回流：第一次就选对则正确连击 +1，连对 >= 2 次升一级并延长复习间隔；
+ * 选错则连击归零、等级重置为 1，明天必须再考。
+ */
+export async function applyQuizResult(charId: string, firstTryCorrect: boolean) {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data: existing, error: readError } = await supabase
+    .from('child_mastery')
+    .select('mastery_level, correct_streak')
+    .eq('char_id', charId)
+    .maybeSingle()
+  if (readError) throw readError
+
+  const currentLevel = Number(existing?.mastery_level ?? 0)
+  const currentStreak = Number(existing?.correct_streak ?? 0)
+
+  let masteryLevel = 1
+  let correctStreak = 0
+  if (firstTryCorrect) {
+    correctStreak = currentStreak + 1
+    masteryLevel = Math.max(currentLevel, 1)
+    if (correctStreak >= 2) masteryLevel = Math.min(masteryLevel + 1, 6)
+  }
+  const intervalDays = REVIEW_INTERVAL_DAYS[masteryLevel - 1] ?? 1
+
+  const { error } = await supabase.from('child_mastery').upsert(
+    {
+      char_id: charId,
+      status: firstTryCorrect ? 'mastered' : 'review',
+      mastery_level: masteryLevel,
+      correct_streak: correctStreak,
+      next_review_date: shiftDate(todayStr(), intervalDays),
+      updated_at: new Date().toISOString(),
+      ...familyPatch(familyId),
+    },
+    { onConflict: 'char_id' },
+  )
+  if (error) throw error
+}
+
+/** 打卡后写入 learning_records（识字模块的学习得分记录，detail 可存古诗名等） */
+export async function insertLearningRecord(params: {
+  recordDate: string
+  subject: string
+  module: string
+  newCount: number
+  reviewCount: number
+  totalCount: number
+  firstTryCorrect: number
+  score: number
+  detail?: string | null
+}) {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { error } = await supabase.from('learning_records').insert({
+    record_date: params.recordDate,
+    subject: params.subject,
+    module: params.module,
+    new_count: params.newCount,
+    review_count: params.reviewCount,
+    total_count: params.totalCount,
+    first_try_correct: params.firstTryCorrect,
+    score: params.score,
+    detail: params.detail ?? null,
+    ...familyPatch(familyId),
+  })
+  if (error) throw error
+}
+
+/** 按 id 取单首古诗（本周古诗缓存回读） */
+export async function fetchPoemById(id: string): Promise<Poem | null> {
+  const supabase = await requireSupabase()
+  const { data, error } = await supabase.from('poems').select('*').eq('id', id).maybeSingle()
+  if (error) throw error
+  return (data as Poem | null) ?? null
+}
+
+/** 以前挑战过的古诗名（learning_records.module = '识字古诗'，诗名存在 detail） */
+export async function fetchLearnedPoemTitles(): Promise<string[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data, error } = await scoped(
+    supabase.from('learning_records').select('detail'),
+    familyId,
+  ).eq('module', '识字古诗')
+  if (error) throw error
+  return (data ?? [])
+    .map((row) => (row.detail as string | null)?.trim())
+    .filter((title): title is string => Boolean(title))
+}
+
+/** 按 id 批量取字卡（保留传入顺序）；今日任务用 id 锁定后回读 */
+export async function fetchLiteracyCharsByIds(ids: string[]): Promise<LiteracyChar[]> {
+  if (ids.length === 0) return []
+  const supabase = await requireSupabase()
+  const { data, error } = await supabase
+    .from('literacy_chars')
+    .select(LITERACY_CHAR_COLUMNS)
+    .in('id', ids)
+  if (error) throw error
+  const byId = new Map((data ?? []).map((row) => [row.id as string, row as LiteracyChar]))
+  return ids.map((id) => byId.get(id)).filter((c): c is LiteracyChar => Boolean(c))
+}
+
+/**
+ * 今日待复习的字：next_review_date <= 今天且已学过（mastery_level > 0），
+ * 掌握等级低的优先，最多取 limit 个。
+ */
+export async function fetchDueReviewChars(today: string, limit: number): Promise<LiteracyChar[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data, error } = await scoped(
+    supabase.from('child_mastery').select('char_id, mastery_level'),
+    familyId,
+  )
+    .lte('next_review_date', today)
+    .gt('mastery_level', 0)
+    .order('mastery_level', { ascending: true })
+    .limit(limit)
+  if (error) throw error
+  const ids = (data ?? []).map((row) => row.char_id as string).filter(Boolean)
+  return fetchLiteracyCharsByIds(ids)
+}
+
+/** 某级别里还没学过（child_mastery 无记录或 mastery_level = 0）的字，随机取 limit 个 */
+export async function fetchUnseenChars(level: number, limit: number): Promise<LiteracyChar[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const [charsRes, seenRes] = await Promise.all([
+    supabase.from('literacy_chars').select(LITERACY_CHAR_COLUMNS).eq('level', level),
+    scoped(supabase.from('child_mastery').select('char_id'), familyId).gt('mastery_level', 0),
+  ])
+  if (charsRes.error) throw charsRes.error
+  if (seenRes.error) throw seenRes.error
+
+  const seenIds = new Set((seenRes.data ?? []).map((row) => row.char_id as string))
+  const pool = ((charsRes.data ?? []) as LiteracyChar[]).filter((char) => !seenIds.has(char.id))
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[pool[i], pool[j]] = [pool[j], pool[i]]
+  }
+  return pool.slice(0, limit)
 }
 
 /** 所有 status='mastered' 的汉字（去重、按级别课次排序）—— 用于 AI 故事 */
@@ -1429,6 +1592,102 @@ export async function upsertProfile(params: {
 export async function deleteProfile(profileId: string): Promise<void> {
   const supabase = await requireSupabase()
   const { error } = await supabase.from('profiles').delete().eq('id', profileId)
+  if (error) throw error
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// knowledge_mastery：各学科知识点的掌握度（数学 / 英语 / 思维据此复习薄弱点）
+// ──────────────────────────────────────────────────────────────────────────────
+
+export type KnowledgeMasteryRow = {
+  knowledge: string
+  mastery_level: number
+  correct_streak: number
+  /** YYYY-MM-DD */
+  next_review_date: string
+}
+
+/**
+ * 某学科全部知识点的掌握记录；还没练过的知识点不会出现在结果里。
+ * 表里的列名是 knowledge_point（各学科自定义字符串：点数 / 字母A / 找规律_ABAB …），
+ * 这里统一映射成 knowledge 字段给业务层使用。
+ */
+export async function fetchKnowledgeMastery(subject: string): Promise<KnowledgeMasteryRow[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data, error } = await scoped(
+    supabase
+      .from('knowledge_mastery')
+      .select('knowledge_point, mastery_level, correct_streak, next_review_date'),
+    familyId,
+  ).eq('subject', subject)
+  if (error) throw error
+  return (data ?? []).map((row) => ({
+    knowledge: String(row.knowledge_point ?? ''),
+    mastery_level: Number(row.mastery_level ?? 0),
+    correct_streak: Number(row.correct_streak ?? 0),
+    next_review_date: String(row.next_review_date ?? todayStr()),
+  }))
+}
+
+/**
+ * 知识点结果回流：环节首答正确率达标则连击 +1，连对 >= 2 次升一级并延长复习间隔；
+ * 未达标则连击归零、等级重置为 1，明天必须再练。
+ *
+ * 注意：历史表没有 (subject, knowledge_point) 唯一索引，所以不用 upsert，
+ * 改为「先查最新一条，再更新 / 插入」，避免依赖数据库约束。
+ */
+export async function applyKnowledgeResult(
+  subject: string,
+  knowledge: string,
+  firstTryCorrect: boolean,
+) {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data: rows, error: readError } = await scoped(
+    supabase
+      .from('knowledge_mastery')
+      .select('mastery_level, correct_streak')
+      .eq('subject', subject)
+      .eq('knowledge_point', knowledge)
+      .limit(1),
+    familyId,
+  )
+  if (readError) throw readError
+  const existing = rows?.[0]
+
+  const currentLevel = Number(existing?.mastery_level ?? 0)
+  const currentStreak = Number(existing?.correct_streak ?? 0)
+  const { masteryLevel, correctStreak, intervalDays } = nextMasteryState(
+    currentLevel,
+    currentStreak,
+    firstTryCorrect,
+  )
+
+  const patch = {
+    mastery_level: masteryLevel,
+    correct_streak: correctStreak,
+    next_review_date: shiftDate(todayStr(), intervalDays),
+    updated_at: new Date().toISOString(),
+  }
+
+  if (existing) {
+    const { error } = await scoped(
+      supabase.from('knowledge_mastery').update(patch),
+      familyId,
+    )
+      .eq('subject', subject)
+      .eq('knowledge_point', knowledge)
+    if (error) throw error
+    return
+  }
+
+  const { error } = await supabase.from('knowledge_mastery').insert({
+    subject,
+    knowledge_point: knowledge,
+    ...patch,
+    ...familyPatch(familyId),
+  })
   if (error) throw error
 }
 
