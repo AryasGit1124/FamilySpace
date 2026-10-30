@@ -9,6 +9,10 @@ export type WeeklyTemplateRow = {
   id: string
   day_of_week: number
   task_id: string | null
+  /** 临时任务只在指定日期生效；普通周模板为 null */
+  specific_date?: string | null
+  /** 临时任务的奖励星星数（普通模板为空，按 1 颗处理） */
+  stars?: number | null
   tasks: TaskRow | null
 }
 
@@ -97,6 +101,7 @@ export function adaptWeeklyTemplatesToTasks(
         gameRoute: task.game_route ?? undefined,
         status,
         inWeeklyPlan: true,
+        stars: row.stars ?? undefined,
       } satisfies CheckInTask
     })
     .filter((t): t is CheckInTask => t !== null)

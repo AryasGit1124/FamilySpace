@@ -26,6 +26,8 @@ export type CheckInTask = {
   gameRoute?: string
   status: TaskStatus
   inWeeklyPlan: boolean
+  /** 打卡奖励星星数（临时添加的任务可自定义，缺省按 1 颗） */
+  stars?: number
 }
 
 export type Weekday = 1 | 2 | 3 | 4 | 5 | 6 | 7

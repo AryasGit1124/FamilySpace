@@ -30,7 +30,7 @@ export default async function TodayPage() {
   }
 
   // ----- 1~3. 并行查整周 templates / checkins / schedules（串行会 3 倍往返延迟） -----
-  const [templateRows, checkinMapByDate, scheduleRows] = await Promise.all([
+  const [allTemplateRows, checkinMapByDate, scheduleRows] = await Promise.all([
     fetchAllWeeklyTemplates().catch((err: unknown) => {
       console.error('[TodayPage] weekly_templates 查询失败:', err)
       return [] as WeeklyTemplateRow[]
@@ -44,6 +44,14 @@ export default async function TodayPage() {
       return [] as ScheduleRow[]
     }),
   ])
+
+  // weekly_templates 里：specific_date 为空的是每周固定模板；
+  // 非空的是「临时任务」，只在本周日期区间内的时间点生效。
+  const templateRows = allTemplateRows.filter(
+    (r) =>
+      !r.specific_date ||
+      (r.specific_date >= weekDates[1] && r.specific_date <= weekDates[7]),
+  )
 
   // ----- 4. 按 day_of_week 分组 -----
   const templatesByDay = groupByDay(templateRows)
@@ -78,6 +86,7 @@ export default async function TodayPage() {
   const merged: Subject[] = []
   const seenIds = new Set<string>()
   for (const s of templateSubjects) {
+    if (seenIds.has(s.id)) continue
     merged.push(s)
     seenIds.add(s.id)
   }
@@ -106,9 +115,7 @@ async function fetchAllWeeklyTemplates(): Promise<WeeklyTemplateRow[]> {
   const { data, error } = await scoped(
     supabase.from('weekly_templates').select(
       `
-        id,
-        day_of_week,
-        task_id,
+        *,
         tasks (
           id,
           subject_id,

@@ -2,10 +2,13 @@
 
 import Link from 'next/link'
 import { useState, useEffect } from 'react'
-import { ChevronRight } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { ChevronRight, Plus } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Progress } from '@/components/ui/progress'
+import { AddTempTaskDialog } from '@/components/add-temp-task-dialog'
 import { useAuth } from '@/components/auth-provider'
 import type { CheckInTask } from '@/lib/mock-data'
 import { cn } from '@/lib/utils'
@@ -57,6 +60,8 @@ export function TaskList({
   const { user, role } = useAuth()
   /** 家长端为测试模式：结算流程照常运行，但不写 checkins / star_ledger */
   const isParent = role === 'parent'
+  const [tempDialogOpen, setTempDialogOpen] = useState(false)
+  const router = useRouter()
 
   useEffect(() => {
     setLocalTasks(tasks)
@@ -107,7 +112,7 @@ export function TaskList({
           task_id: taskId,
           checkin_date: key,
           status: 'pending',
-          stars: 1,
+          stars: task.stars ?? 1,
           ...familyPatch(familyId),
         })
         if (error) throw error
@@ -199,13 +204,20 @@ export function TaskList({
 
   return (
     <section aria-labelledby="task-list-title" className="flex flex-col gap-3">
-      <div className="flex items-baseline justify-between px-1">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
         <h2 id="task-list-title" className="text-lg font-bold">
           打卡任务
         </h2>
-        <span className="text-sm text-muted-foreground">
-          {doneTasks.length}/{localTasks.length} 已完成
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">
+            {doneTasks.length}/{localTasks.length} 已完成
+          </span>
+          {/* 家长和孩子端都可以临时给某一天加任务 */}
+          <Button size="sm" variant="outline" onClick={() => setTempDialogOpen(true)}>
+            <Plus className="size-3.5" aria-hidden="true" />
+            添加临时任务
+          </Button>
+        </div>
       </div>
       <Progress value={percent} aria-label={`完成进度 ${percent}%`} />
 
@@ -237,6 +249,14 @@ export function TaskList({
           )}
         </div>
       )}
+
+      <AddTempTaskDialog
+        open={tempDialogOpen}
+        onOpenChange={setTempDialogOpen}
+        dateKey={dateKey ?? todayDateKey()}
+        existingTaskIds={localTasks.map((t) => t.id)}
+        onAdded={() => router.refresh()}
+      />
     </section>
   )
 }

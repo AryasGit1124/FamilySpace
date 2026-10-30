@@ -1,6 +1,6 @@
 import { requireSupabase } from '@/lib/supabase'
 import { resolveFamilyId, type UserRole } from '@/lib/family'
-import { shiftDate, todayStr } from '@/lib/dates'
+import { isoDayOfWeek, shiftDate, todayStr } from '@/lib/dates'
 import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
 import type { Weekday } from '@/lib/mock-data'
@@ -1280,7 +1280,7 @@ export async function fetchWeeklyTemplatesWithTasks() {
   const { data, error } = await scoped(
     supabase.from('weekly_templates').select(
       `
-        id, day_of_week, task_id,
+        *,
         tasks ( id, title, type, description, format, subject_id,
           subjects ( id, name, color )
         )
@@ -1289,7 +1289,8 @@ export async function fetchWeeklyTemplatesWithTasks() {
     familyId,
   ).order('day_of_week', { ascending: true })
   if (error) throw error
-  return data ?? []
+  // 临时任务（specific_date 非空）不进每周计划编辑页
+  return (data ?? []).filter((row) => !row.specific_date)
 }
 
 export async function insertWeeklyTemplate(task_id: string, day_of_week: Weekday) {
@@ -1769,6 +1770,53 @@ export async function fetchFamilyByInviteCode(code: string): Promise<{ id: strin
   if (error) throw error
   const row = Array.isArray(data) ? data[0] : data
   return row ? { id: row.id, name: row.name } : null
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 临时任务（weekly_templates.specific_date）
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** 把已有任务挂到某一天（只对这一天生效；重复添加自动跳过） */
+export async function addTempTasksToDay(taskIds: string[], taskDate: string, stars = 1) {
+  if (taskIds.length === 0) return
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data, error } = await scoped(
+    supabase.from('weekly_templates').select('task_id').eq('specific_date', taskDate),
+    familyId,
+  )
+  if (error) throw error
+  const existing = new Set((data ?? []).map((r) => r.task_id as string | null))
+  const rows = taskIds
+    .filter((taskId) => !existing.has(taskId))
+    .map((taskId) => ({
+      task_id: taskId,
+      day_of_week: isoDayOfWeek(taskDate),
+      specific_date: taskDate,
+      stars,
+      ...familyPatch(familyId),
+    }))
+  if (rows.length === 0) return
+  const { error: insertError } = await supabase.from('weekly_templates').insert(rows)
+  if (insertError) throw insertError
+}
+
+/** 自定义临时任务：先建 tasks 记录，再挂到这一天 */
+export async function createTempTaskForDay(params: {
+  subject_id: string
+  title: string
+  type?: 'online' | 'offline'
+  stars?: number
+  task_date: string
+}) {
+  const created = await insertTask({
+    subject_id: params.subject_id,
+    title: params.title,
+    type: params.type ?? 'offline',
+    format: 'self',
+  })
+  await addTempTasksToDay([created.id], params.task_date, params.stars ?? 1)
+  return created.id
 }
 
 /** 生成 uuid：非 https 环境（如局域网 http://192.168.x.x:3000）下 crypto.randomUUID 不可用 */
