@@ -64,7 +64,7 @@ export function DynamicGamePlayer({ taskId, subjectId, title, game }: Props) {
     setSaving(true)
     setError('')
     try {
-      // 故事没有对错，固定奖励 1 颗星；其余题型按首答正确率结算
+      // 故事没有对错，固定预估 1 颗星；其余题型按首答正确率结算
       const starRule = game.type === 'story' ? () => 1 : undefined
       const stars = await handleGameCheckin(taskId, total, firstTry, isParent, starRule)
       setEarnedStars(stars)
@@ -117,9 +117,9 @@ export function DynamicGamePlayer({ taskId, subjectId, title, game }: Props) {
             <div className="flex animate-pulse flex-col items-center gap-1 rounded-xl bg-amber-50 px-4 py-3">
               <CheckCircle2 className="size-6 text-amber-500" aria-hidden="true" />
               <p className="text-base font-semibold text-amber-600">
-                打卡成功！等待家长确认后，就能获得星星啦 ⭐
+                打卡成功！家长审核通过后，就能获得星星啦 ⭐
               </p>
-              <p className="text-xs text-amber-500">本次可得 {earnedStars} 颗星星</p>
+              <p className="text-xs text-amber-500">本次预估 {earnedStars} 颗星星</p>
             </div>
           )}
 

@@ -141,10 +141,13 @@ export default function ApprovalsPage() {
                         </span>
                       )}
                       <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-bold text-amber-600">
-                        待发 {item.stars} ⭐
+                        预估 {item.stars} ⭐
                       </span>
                     </div>
                     <p className="mt-1 truncate text-base font-medium">{item.taskTitle}</p>
+                    <p className="mt-0.5 text-sm font-semibold text-amber-700">
+                      {item.score === null ? `线下课程 · 固定 ${item.stars} 颗星` : `得分：${item.score} 分`}
+                    </p>
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       {item.checkinDate} · 提交于 {formatTime(item.createdAt)}
                     </p>

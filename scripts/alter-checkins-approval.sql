@@ -3,6 +3,8 @@
 
 -- 1. 新增字段
 alter table public.checkins add column if not exists stars integer not null default 1;
+-- 首答正确率百分制得分（线上游戏写入；线下课程为 null）
+alter table public.checkins add column if not exists score integer;
 alter table public.checkins add column if not exists reviewed_at timestamptz;
 
 -- 2. 删除旧的 status check 约束（历史约束可能只允许 done 等旧值）

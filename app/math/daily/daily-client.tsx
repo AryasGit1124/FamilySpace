@@ -147,14 +147,6 @@ function questionSpeech(q: Question): string {
   }
 }
 
-/** 本次闯关（10 题）的星星规则：首答全对 → 2 星；≥90% → 1 星；否则 0 星 */
-function mathDailyStarRule(total: number, accuracy: number): number {
-  const correct = Math.round(accuracy * total)
-  if (correct >= total) return 2
-  if (correct >= Math.ceil(total * 0.9)) return 1
-  return 0
-}
-
 /** 具象配图：一组 Emoji，可把前 cut 个标成「被减掉」的灰字删除线 */
 function EmojiStack({
   emoji,
@@ -356,7 +348,6 @@ export function MathDailyClient({
         TOTAL_QUESTIONS,
         totalFirstTryCorrect,
         isParent,
-        (accuracy: number) => mathDailyStarRule(TOTAL_QUESTIONS, accuracy),
       )
       setEarnedStars(stars)
     } catch (err) {
@@ -409,7 +400,7 @@ export function MathDailyClient({
             {earnedStars !== null ? (
               <div className="flex w-full flex-col items-center gap-3 rounded-2xl bg-emerald-50 p-4">
                 <p className="text-base font-bold text-emerald-800">
-                  打卡成功！等待家长确认后，就能获得 {earnedStars} 颗星星啦 ⭐
+                  打卡成功！家长审核通过后，就能获得 {earnedStars} 颗星星啦 ⭐
                 </p>
                 {isParent && <p className="text-xs text-muted-foreground">（家长测试模式：未实际写入打卡和星星）</p>}
                 <Button className="h-12 w-full text-base" onClick={() => router.push('/')}>

@@ -88,7 +88,7 @@ export function TaskList({
         const { earned } = await handleTeacherCheckin(taskId, user?.id ?? '', isParent)
         if (earned > 0) {
           window.alert(
-            `${testPrefix}打卡成功！等待家长确认后，就能获得 ${earned} 颗星星啦 ⭐`,
+            `${testPrefix}🎉 打卡成功！家长审核通过后，你将获得 ${earned} 颗星星 ⭐`,
           )
           window.dispatchEvent(new Event('checkins-changed'))
         }

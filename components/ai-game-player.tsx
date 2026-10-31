@@ -110,7 +110,7 @@ export function AiGamePlayer({ taskId, subjectId, title, questions }: Props) {
             </p>
             {checked && (
               <p className="text-base font-semibold text-amber-600">
-                等待家长确认后可获得 {earnedStars} 颗星星 ⭐
+                家长审核通过后可获得 {earnedStars} 颗星星 ⭐
               </p>
             )}
           </div>
@@ -118,7 +118,7 @@ export function AiGamePlayer({ taskId, subjectId, title, questions }: Props) {
           {checked ? (
             <>
               <Badge variant="secondary" className="text-emerald-700">
-                打卡成功，等待家长确认
+                打卡成功，等待家长审核
               </Badge>
               {subjectId && (
                 <Link

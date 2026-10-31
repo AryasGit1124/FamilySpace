@@ -146,10 +146,10 @@ export function StoryClient({ taskId }: { taskId: string | null }) {
               {checked ? (
                 <div className="flex flex-col items-center gap-2">
                   <Badge variant="secondary" className="text-emerald-700">
-                    打卡成功，等待家长确认
+                    打卡成功，等待家长审核
                   </Badge>
                   <p className="text-base font-semibold text-amber-600">
-                    等待家长确认后可获得 {earnedStars} 颗星星 ⭐
+                    家长审核通过后可获得 {earnedStars} 颗星星 ⭐
                   </p>
                 </div>
               ) : (

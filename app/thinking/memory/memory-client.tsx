@@ -217,11 +217,11 @@ export function MemoryGame({
             </p>
             {checked && (
               <p className="text-base font-semibold text-amber-600">
-                等待家长确认后可获得 {earnedStars} 颗星星 ⭐
+                家长审核通过后可获得 {earnedStars} 颗星星 ⭐
               </p>
             )}
             {checked ? (
-              <p className="text-sm font-medium text-emerald-600">打卡成功，等待家长确认 ⏳</p>
+              <p className="text-sm font-medium text-emerald-600">打卡成功，等待家长审核 ⏳</p>
             ) : (
               <Button className="mt-1" disabled={checkingIn} onClick={doCheckin}>
                 {checkingIn ? '正在打卡…' : '完成打卡'}

@@ -1240,7 +1240,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
               </p>
               <p className="text-center text-sm font-bold text-emerald-700 md:text-base">
                 <CheckCircle2 className="mr-1 inline size-4 align-[-2px]" aria-hidden="true" />
-                打卡成功！等待家长审核后就能获得 {earnedStars} 颗星星啦 ⭐
+                打卡成功！家长审核通过后就能获得 {earnedStars} 颗星星啦 ⭐
               </p>
               <div className="flex w-full gap-2">
                 <Button

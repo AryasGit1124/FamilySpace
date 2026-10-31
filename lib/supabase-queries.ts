@@ -3,6 +3,7 @@ import { resolveFamilyId, type UserRole } from '@/lib/family'
 import { isoDayOfWeek, shiftDate, todayStr } from '@/lib/dates'
 import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
+import { estimateStarsFromScore } from '@/lib/star-rules'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -691,7 +692,9 @@ export type PendingCheckinItem = {
   subjectName: string | null
   checkinDate: string
   createdAt: string
-  /** 审核通过后应发放的星星数（打卡时已算好，含连续 5 天奖励） */
+  /** 首答正确率百分制得分；线下课程无正确率时为 null */
+  score: number | null
+  /** 孩子端按学科规则预估、审核通过后发放的星星数 */
   stars: number
 }
 
@@ -707,7 +710,7 @@ export async function fetchPendingCheckins(): Promise<PendingCheckinItem[]> {
 
   const { data, error } = await scoped(
     supabase.from('checkins').select(
-      `id, task_id, checkin_date, created_at, stars,
+      `id, task_id, checkin_date, created_at, stars, score,
        tasks ( title, subjects ( name ) )`,
     ),
     familyId,
@@ -724,6 +727,7 @@ export async function fetchPendingCheckins(): Promise<PendingCheckinItem[]> {
     const tasks = Array.isArray(row?.tasks) ? row.tasks[0] : row?.tasks
     const subjects = Array.isArray(tasks?.subjects) ? tasks.subjects[0] : tasks?.subjects
     const taskId = row.task_id ? String(row.task_id) : null
+    const score = typeof row.score === 'number' ? row.score : null
     return {
       id: String(row.id),
       taskId,
@@ -731,7 +735,9 @@ export async function fetchPendingCheckins(): Promise<PendingCheckinItem[]> {
       subjectName: subjects?.name ?? null,
       checkinDate: String(row.checkin_date ?? ''),
       createdAt: String(row.created_at ?? ''),
-      stars: typeof row.stars === 'number' ? row.stars : 1,
+      score,
+      stars:
+        typeof row.stars === 'number' ? Math.max(0, row.stars) : estimateStarsFromScore(score),
     }
   })
 }
@@ -755,9 +761,11 @@ export async function fetchPendingCheckinCount(): Promise<number> {
 
 /**
  * 家长确认打卡：checkins → approved，并写入 star_ledger 发放星星。
+ * 发放数取自孩子端按学科规则算好的预估星星（checkins.stars）；
+ * 旧记录没有 stars 时，按 score 兜底计算（线下 2 颗；线上 100 分 3 颗、80 分以上 2 颗、其他 1 颗）。
  * 使用 status = pending 作为条件更新，天然幂等，重复点击不会重复发星。
  * taskName 写入 star_ledger.task_name，供星星流水显示具体任务名。
- * @returns 实际发放的星星数（记录已被处理或星星为 0 时返回 0）
+ * @returns 实际发放的星星数（记录已被处理时返回 0）
  */
 export async function approveCheckin(checkinId: string, taskName?: string | null): Promise<number> {
   const supabase = await requireSupabase()
@@ -769,19 +777,22 @@ export async function approveCheckin(checkinId: string, taskName?: string | null
     .eq('id', checkinId)
     .eq('family_id', familyId)
     .eq('status', 'pending')
-    .select('id, stars')
+    .select('id, score, stars')
 
   if (error) throw error
   const row = data?.[0]
   if (!row) return 0
 
-  const amount = typeof row.stars === 'number' && row.stars > 0 ? row.stars : 0
+  const amount =
+    typeof row.stars === 'number'
+      ? Math.max(0, row.stars)
+      : estimateStarsFromScore(typeof row.score === 'number' ? row.score : null)
   if (amount > 0) {
     const { error: ledgerError } = await supabase
       .from('star_ledger')
       .insert({
         amount,
-        reason: '打卡审核通过',
+        reason: '家长审核通过打卡',
         task_name: taskName ?? null,
         ...familyPatch(familyId),
       })
