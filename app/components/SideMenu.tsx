@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Baby,
   BarChart3,
+  Camera,
   ClipboardCheck,
   Library,
   LogOut,
@@ -23,6 +24,7 @@ type MenuItem = { href: string; label: string; icon: LucideIcon; sub?: boolean }
 
 const MENU_ITEMS: MenuItem[] = [
   { href: '/parent/approvals', label: '打卡审核', icon: ClipboardCheck },
+  { href: '/growth', label: '成长档案', icon: Camera },
   { href: '/stats', label: '学习统计', icon: BarChart3 },
   { href: '/upload', label: '上传资料', icon: UploadCloud },
   { href: '/library', label: '资料库', icon: Library },
@@ -70,12 +72,12 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
           isOpen ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       />
-      {/* 抽屉本体 */}
+      {/* 抽屉本体：关闭时同时禁用指针事件，避免移动端不可见的抽屉拦截点击 */}
       <aside
         aria-hidden={!isOpen}
         className={cn(
           'fixed left-0 top-0 z-50 h-full w-[85%] bg-white shadow-xl transition-transform duration-300 sm:w-72 lg:w-80',
-          isOpen ? 'translate-x-0' : '-translate-x-full',
+          isOpen ? 'translate-x-0' : 'pointer-events-none -translate-x-full',
         )}
       >
         <div className="flex h-16 items-center gap-2 border-b px-5">

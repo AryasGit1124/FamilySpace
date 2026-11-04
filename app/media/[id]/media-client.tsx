@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { BookOpenCheck, CheckCircle2, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
+import { VideoPlayer } from '@/app/components/VideoPlayer'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/components/auth-provider'
 import { handleTeacherCheckin } from '@/lib/rewards'
@@ -221,28 +222,24 @@ export function MediaClient({ media }: { media: MediaRow }) {
               {media.note?.trim() || '（无内容）'}
             </p>
           </div>
+        ) : isVideo ? (
+          <VideoPlayer
+            ref={videoRef}
+            src={media.file_url}
+            poster={media.thumb_url}
+            onLoadedMetadata={handleLoadedMetadata}
+            onTimeUpdate={handleTimeUpdate}
+            onError={() => setCodecIssue(true)}
+            className="mx-auto w-full max-w-3xl lg:max-w-5xl"
+          />
         ) : (
           <div className="mx-auto w-full max-w-3xl overflow-hidden rounded-xl bg-black lg:max-w-5xl">
-            {isVideo ? (
-              <video
-                ref={videoRef}
-                src={media.file_url}
-                poster={media.thumb_url ?? undefined}
-                controls
-                preload="metadata"
-                className="max-h-[70vh] w-full bg-black object-contain"
-                onLoadedMetadata={handleLoadedMetadata}
-                onTimeUpdate={handleTimeUpdate}
-                onError={() => setCodecIssue(true)}
-              />
-            ) : (
-              // 该图使用普通 img，next.config 已开启 images.unoptimized
-              <img
-                src={media.file_url}
-                alt={media.course_name ?? '资料图片'}
-                className="max-h-[70vh] w-full object-contain"
-              />
-            )}
+            {/* 该图使用普通 img，next.config 已开启 images.unoptimized */}
+            <img
+              src={media.file_url}
+              alt={media.course_name ?? '资料图片'}
+              className="max-h-[70vh] w-full object-contain"
+            />
           </div>
         )}
 

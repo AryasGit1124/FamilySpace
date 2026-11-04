@@ -11,7 +11,13 @@ export function StarBadge() {
   const [total, setTotal] = useState<number | null>(null)
 
   const load = useCallback(async () => {
-    setTotal(await fetchStarTotal())
+    try {
+      setTotal(await fetchStarTotal())
+    } catch (err) {
+      // 未登录 / 网络失败时显示 0，不能抛错阻断后续渲染
+      console.warn('[StarBadge] 读取星星总额失败:', err)
+      setTotal(0)
+    }
   }, [])
 
   useEffect(() => {

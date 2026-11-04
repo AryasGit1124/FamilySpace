@@ -8,13 +8,6 @@ import { LEGACY_TASK_NAMES } from '@/lib/task-names'
 type SubjectCount = { subjectId: string; name: string; color: string | null; count: number }
 type TaskOption = { id: string; name: string }
 type CheckinRecord = { date: string; taskId: string | null }
-type TimelineItem = {
-  taskId: string
-  taskTitle: string | null
-  checkinDate: string
-  createdAt: string
-  timeAgo: string
-}
 type StarLedgerRow = {
   id: string
   amount: number
@@ -27,7 +20,6 @@ type Props = {
   checkinRecords: CheckinRecord[]
   tasks: TaskOption[]
   subjectCounts: SubjectCount[]
-  timeline: TimelineItem[]
   starLedger: StarLedgerRow[]
 }
 
@@ -41,7 +33,6 @@ const TABS = [
   { key: 'overview', label: '概览' },
   { key: 'calendar', label: '打卡日历' },
   { key: 'subjects', label: '学科分布' },
-  { key: 'recent', label: '最近打卡' },
   { key: 'ledger', label: '星星流水' },
 ] as const
 type TabKey = (typeof TABS)[number]['key']
@@ -61,16 +52,18 @@ const TIME_RANGES = [
 type TimeRange = (typeof TIME_RANGES)[number]['key']
 
 /**
- * 学习统计页：胶囊 Tab 置顶（概览 / 打卡日历 / 学科分布 / 最近打卡 / 星星流水）。
+ * 学习统计页：胶囊 Tab 置顶（概览 / 打卡日历 / 学科分布 / 星星流水）。
  * 外层高度锁定、禁止页面滚动；各 Tab 内容在剩余空间内自适应铺满，列表内部滚动。
  * 注意：全局布局已有 pt-16（Header）+ pb-24（底部 TabBar），故可用高度为 100dvh - 10rem。
  */
-export function StatsView({ checkinRecords, tasks, subjectCounts, timeline, starLedger }: Props) {
+export function StatsView({ checkinRecords, tasks, subjectCounts, starLedger }: Props) {
   const [active, setActive] = useState<TabKey>('overview')
   /** 课程筛选：'all' / 课程展示名 / OTHER_TASK（匹配不到任务名的历史记录） */
   const [taskFilter, setTaskFilter] = useState<string>('all')
   /** 概览时间范围：本月 / 本年 */
   const [timeRange, setTimeRange] = useState<TimeRange>('month')
+  /** 打卡日历当前查看月份（YYYY-MM），默认当月 */
+  const [viewMonth, setViewMonth] = useState(() => todayStr().slice(0, 7))
   /** 星星流水筛选：全部 / 仅获得 / 仅消耗 */
   const [ledgerFilter, setLedgerFilter] = useState<'all' | 'earn' | 'spend'>('all')
 
@@ -165,7 +158,10 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, timeline, star
 
   const totalDays = overviewDays
   const streak = overviewStreak
-  const calendar = useMemo(() => buildCurrentMonthCalendar(filteredDates), [filteredDates])
+  const calendar = useMemo(
+    () => buildCurrentMonthCalendar(filteredDates, viewMonth),
+    [filteredDates, viewMonth],
+  )
 
   const filterLabel =
     taskFilter === 'all' ? '全部课程' : taskFilter === OTHER_TASK ? '其他任务' : taskFilter
@@ -278,13 +274,27 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, timeline, star
           </div>
         )}
 
-        {/* 打卡日历：顶部课程筛选 + 大尺寸月历铺满 */}
+        {/* 打卡日历：月份切换 + 课程筛选 + 大尺寸月历铺满 */}
         {active === 'calendar' && (
           <section className="flex h-full flex-col rounded-3xl bg-white p-4 shadow-sm md:p-5">
-            <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-2">
-              <h2 className="text-base font-bold text-slate-800 md:text-lg">
-                {calendar.year} 年 {calendar.month} 月打卡 · {filterLabel}
+            <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setViewMonth((m) => shiftMonth(m, -1))}
+                className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-200"
+              >
+                ‹ 上个月
+              </button>
+              <h2 className="text-center text-base font-bold text-slate-800 md:text-lg">
+                {calendar.year} 年 {calendar.month} 月 · {filterLabel}
               </h2>
+              <button
+                type="button"
+                onClick={() => setViewMonth((m) => shiftMonth(m, 1))}
+                className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-200"
+              >
+                下个月 ›
+              </button>
             </div>
 
             <div className="grid shrink-0 grid-cols-7 gap-1.5 text-center text-xs font-semibold text-slate-400">
@@ -374,40 +384,6 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, timeline, star
           </section>
         )}
 
-        {/* 最近打卡流水 */}
-        {active === 'recent' && (
-          <section className="flex h-full flex-col rounded-3xl bg-white p-4 shadow-sm md:p-5">
-            <h2 className="mb-3 shrink-0 text-base font-bold text-slate-800 md:text-lg">
-              最近打卡
-            </h2>
-            {timeline.length === 0 ? (
-              <p className="flex flex-1 items-center justify-center text-sm text-slate-400">
-                暂无打卡记录
-              </p>
-            ) : (
-              <ul className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto pr-1">
-                {timeline.map((item, idx) => (
-                  <li
-                    key={`${item.taskId}-${item.createdAt}-${idx}`}
-                    className="flex items-center gap-3 py-3"
-                  >
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-base">
-                      ✅
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-slate-700">
-                        完成了 {item.taskTitle ?? item.taskId}
-                      </p>
-                      <p className="text-xs text-slate-400">{item.checkinDate}</p>
-                    </div>
-                    <span className="shrink-0 text-xs text-slate-400">{item.timeAgo}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        )}
-
         {/* 星星流水明细 */}
         {active === 'ledger' && (
           <section className="flex h-full flex-col rounded-3xl bg-white p-4 shadow-sm md:p-5">
@@ -474,6 +450,13 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, timeline, star
       </div>
     </div>
   )
+}
+
+/** YYYY-MM 偏移若干个月 */
+function shiftMonth(yearMonth: string, delta: number): string {
+  const [y, m] = yearMonth.split('-').map(Number)
+  const d = new Date(y, m - 1 + delta, 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
 /** ISO 时间 -> 北京时间日期 key（YYYY-MM-DD） */

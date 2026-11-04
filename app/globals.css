@@ -2,6 +2,16 @@
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 
+/* 移动端：点击不做 300ms 延迟，且不拦截滚动/缩放之外的手势 */
+button,
+a,
+input,
+textarea,
+select,
+label {
+  touch-action: manipulation;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

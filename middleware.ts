@@ -31,8 +31,13 @@ export async function middleware(request: NextRequest) {
     },
   })
 
-  // 触发一次 getUser，使过期的 access token 在这里被刷新
-  await supabase.auth.getUser()
+  // 触发一次 getUser，使过期的 access token 在这里被刷新。
+  // 网络异常（如手机访问时 Supabase 暂时不可达）只跳过续期，绝不能让整页挂起/报错。
+  try {
+    await supabase.auth.getUser()
+  } catch (err) {
+    console.warn('[middleware] 刷新登录态失败，跳过本次续期:', err)
+  }
 
   return response
 }

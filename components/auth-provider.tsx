@@ -53,10 +53,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // 偶发网络抖动 / RLS 预热会让第一次读取落空，重试一次再去兜底，
     // 否则会把已登录用户误判成「没有家庭」并弹回登录页
-    let row = await fetchProfile(nextUser.id)
-    if (!row) {
-      await new Promise((resolve) => setTimeout(resolve, 400))
+    let row: ProfileRow | null = null
+    try {
       row = await fetchProfile(nextUser.id)
+      if (!row) {
+        await new Promise((resolve) => setTimeout(resolve, 400))
+        row = await fetchProfile(nextUser.id)
+      }
+    } catch (err) {
+      // 查询异常时不要抛错阻断初始化，继续走下面的本地兜底
+      console.warn('[auth] 读取 profile 失败，使用本地兜底:', err)
     }
     if (row) {
       setProfile(row)
@@ -92,6 +98,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       void applySession(data.session?.user ?? null).finally(() => {
         if (active) setLoading(false)
       })
+    }).catch((err) => {
+      // getSession 异常时必须结束 loading，否则整页会一直停在未初始化状态
+      console.warn('[auth] 读取会话失败:', err)
+      if (active) setLoading(false)
     })
 
     const {
@@ -100,7 +110,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!active) return
       // 延迟到回调外再查库，避免在 Supabase Auth 回调里发请求造成死锁
       setTimeout(() => {
-        if (active) void applySession(session?.user ?? null)
+        if (active) {
+          void applySession(session?.user ?? null).catch((err) => {
+            console.warn('[auth] 登录态变更处理失败:', err)
+          })
+        }
       }, 0)
     })
 

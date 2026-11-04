@@ -65,11 +65,12 @@ export function calcStreak(dates: string[]): number {
   return streak
 }
 
-/** 当前月份日历：返回 { day, dateKey, count }[]，count 为当天打卡次数 */
-export function buildCurrentMonthCalendar(checkinDates: string[]) {
+/** 指定月份（YYYY-MM，缺省当月）的日历：返回 { day, dateKey, count }[]，count 为当天打卡次数 */
+export function buildCurrentMonthCalendar(checkinDates: string[], yearMonth?: string) {
   const nowKey = todayStr()
-  const year = Number(nowKey.slice(0, 4))
-  const month = Number(nowKey.slice(5, 7)) - 1 // 0-based
+  const source = yearMonth && /^\d{4}-\d{2}$/.test(yearMonth) ? yearMonth : nowKey.slice(0, 7)
+  const year = Number(source.slice(0, 4))
+  const month = Number(source.slice(5, 7)) - 1 // 0-based
   const daysInMonth = new Date(year, month + 1, 0).getDate()
   const firstDayWeekday = new Date(year, month, 1).getDay() // 0=周日
 

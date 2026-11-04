@@ -15,7 +15,12 @@ export async function POST(request: Request) {
     )
   }
 
-  let body: { fileName?: unknown; fileType?: unknown; subjectName?: unknown } | null = null
+  let body: {
+    fileName?: unknown
+    fileType?: unknown
+    subjectName?: unknown
+    folder?: unknown
+  } | null = null
   try {
     body = await request.json()
   } catch {
@@ -30,9 +35,13 @@ export async function POST(request: Request) {
 
   // 文件名可能含中文/空格/斜杠，去掉路径分隔符与特殊字符后再生成 Key
   const safeName = rawName.replace(/[/\\:*?"<>|#%\s]+/g, '_').trim()
-  // 按「学科(课程) / 年月」分目录：英语/2026-10/1723456789_reading.mp4
-  const subject = sanitizeSegment(typeof body?.subjectName === 'string' ? body.subjectName : '') || '未分类'
-  const fileKey = `${subject}/${currentMonth()}/${Date.now()}_${safeName}`
+  // 目录优先级：显式 folder（如成长档案传 growth）→ 学科名 → 未分类
+  // 例：growth/2026-11/xxx.mp4 与 英语/2026-10/xxx 分目录存放
+  const folder =
+    sanitizeSegment(typeof body?.folder === 'string' ? body.folder : '') ||
+    sanitizeSegment(typeof body?.subjectName === 'string' ? body.subjectName : '') ||
+    '未分类'
+  const fileKey = `${folder}/${currentMonth()}/${Date.now()}_${safeName}`
 
   const uploadUrl = presignR2Url({
     accountId: accountId!,
