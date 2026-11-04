@@ -91,6 +91,7 @@ export function PoemPlayground({
   onComplete,
   compact = false,
   initialTab = 'read',
+  simpleMode = false,
 }: {
   poem: Poem
   /** 孩子已认识的字，朗读时绿色高亮 */
@@ -100,6 +101,8 @@ export function PoemPlayground({
   /** 嵌入模式：紧凑布局，一屏内放下 */
   compact?: boolean
   initialTab?: TabKey
+  /** 简化模式：只展示古诗与听读，点「听古诗」或「我已跟读完毕」即可完成，不再要求排序/填空 */
+  simpleMode?: boolean
 }) {
   const [tab, setTab] = useState<TabKey>(initialTab)
 
@@ -110,6 +113,9 @@ export function PoemPlayground({
   const [readLines, setReadLines] = useState<Set<number>>(new Set())
   const [reading, setReading] = useState(false)
   const readTokenRef = useRef(0)
+
+  /** 简化模式下，点过听读或确认跟读即视为完成 */
+  const [simpleDone, setSimpleDone] = useState(false)
 
   // 排序小游戏
   const [orderPool, setOrderPool] = useState<number[]>([])
@@ -134,6 +140,7 @@ export function PoemPlayground({
     setFill(buildFillQuestion(lines))
     setWrongOptions([])
     setFillDone(false)
+    setSimpleDone(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [poem.id])
 
@@ -156,14 +163,17 @@ export function PoemPlayground({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [poem.id])
   useEffect(() => {
-    if (completedRef.current || !readDone || !gameDone) return
+    if (completedRef.current) return
+    const done = simpleMode ? simpleDone : readDone && gameDone
+    if (!done) return
     completedRef.current = true
     onComplete?.()
-  }, [readDone, gameDone, onComplete])
+  }, [simpleMode, simpleDone, readDone, gameDone, onComplete])
 
-  /** 听全诗：逐句朗读，播完标记全部句子已读 */
+  /** 听全诗：逐句朗读，播完标记全部句子已读；简化模式下点按即视为完成 */
   const listenAll = useCallback(async () => {
     if (lines.length === 0) return
+    if (simpleMode) setSimpleDone(true)
     const token = ++readTokenRef.current
     stopSpeak()
     setReading(true)
@@ -171,7 +181,7 @@ export function PoemPlayground({
     if (readTokenRef.current !== token) return
     setReading(false)
     setReadLines(new Set(lines.map((_, i) => i)))
-  }, [lines])
+  }, [lines, simpleMode])
 
   /** 点单句朗读，并记录该句已读 */
   const speakLine = (index: number) => {
@@ -249,7 +259,8 @@ export function PoemPlayground({
         compact ? 'h-full flex-1 gap-1.5 overflow-hidden' : 'gap-5',
       )}
     >
-      {/* 顶部功能 Tab */}
+      {/* 顶部功能 Tab：简化模式只保留古诗听读，不显示排序/填空 */}
+      {!simpleMode && (
       <div className="flex shrink-0 gap-2">
         {TABS.map((item) => {
           const Icon = item.icon
@@ -274,9 +285,10 @@ export function PoemPlayground({
           )
         })}
       </div>
+      )}
 
       {/* 朗读 */}
-      {tab === 'read' && (
+      {(simpleMode || tab === 'read') && (
         <section
           className={cn(
             'flex min-h-0 flex-1 flex-col rounded-2xl border bg-card',
@@ -294,7 +306,7 @@ export function PoemPlayground({
             </div>
             <Button size="sm" onClick={listenAll}>
               <Volume2 aria-hidden="true" />
-              {reading ? '朗读中…' : '听全诗'}
+              {reading ? '朗读中…' : simpleMode ? '🔊 听古诗' : '听全诗'}
             </Button>
           </div>
 
@@ -323,14 +335,34 @@ export function PoemPlayground({
               </li>
             ))}
           </ul>
-          <p className="text-xs text-muted-foreground">
-            {readDone ? '朗读完成，去试试排序或填空吧' : '点句子听读音，跟着读一遍'}
-          </p>
+          {simpleMode ? (
+            <div className="flex flex-col gap-1.5">
+              <Button
+                size="sm"
+                variant={simpleDone ? 'secondary' : 'outline'}
+                className="w-full"
+                disabled={simpleDone}
+                onClick={() => setSimpleDone(true)}
+              >
+                <CheckCircle2 aria-hidden="true" />
+                {simpleDone ? '已跟读，可以打卡' : '我已跟读完毕'}
+              </Button>
+              <p className="text-center text-xs text-muted-foreground">
+                {simpleDone
+                  ? '打卡已解锁，点底部「完成学习打卡」即可'
+                  : '点「听古诗」或「我已跟读完毕」就能解锁打卡'}
+              </p>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {readDone ? '朗读完成，去试试排序或填空吧' : '点句子听读音，跟着读一遍'}
+            </p>
+          )}
         </section>
       )}
 
-      {/* 排序 */}
-      {tab === 'order' && (
+      {/* 排序：简化模式不显示 */}
+      {!simpleMode && tab === 'order' && (
         <section
           className={cn(
             'flex min-h-0 flex-1 flex-col rounded-2xl border bg-card',
@@ -384,8 +416,8 @@ export function PoemPlayground({
         </section>
       )}
 
-      {/* 填空 */}
-      {tab === 'fill' && (
+      {/* 填空：简化模式不显示 */}
+      {!simpleMode && tab === 'fill' && (
         <section
           className={cn(
             'flex min-h-0 flex-1 flex-col rounded-2xl border bg-card',

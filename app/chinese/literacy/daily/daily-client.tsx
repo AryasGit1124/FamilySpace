@@ -48,8 +48,8 @@ function shuffle<T>(arr: T[]): T[] {
   return out
 }
 
-/** LocalStorage key：按「日期 + 级别」锁定当天任务，中途退出不重抽 */
-const dailyTaskKey = (date: string, level: number) => `literacy_daily_task:${date}:${level}`
+/** LocalStorage key：按「日期 + 级别」锁定当天任务，中途退出不重抽（v3 起复习池含 mastered 到期字） */
+const dailyTaskKey = (date: string, level: number) => `literacy_daily_task:v3:${date}:${level}`
 
 /** 当前 ISO 周标识（如 2026-W44），用来锁定「本周古诗」 */
 function currentWeekKey(date = new Date()): string {
@@ -268,7 +268,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   const [poemLoading, setPoemLoading] = useState(true)
   /** 今日匹配到的古诗 */
   const [poem, setPoem] = useState<Poem | null>(null)
-  /** 在古诗组件里完成「朗读 + 填空/排序」后才能打卡 */
+  /** 在古诗组件里点「听古诗」或「我已跟读完毕」后即可打卡 */
   const [poemCompleted, setPoemCompleted] = useState(false)
 
   /** 孩子认识的字：已掌握的 + 今天 Step 2 刚学的（Step 4 高亮以此为准） */
@@ -687,7 +687,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
 
   const handleCheckin = async () => {
     if (checkingIn || earnedStars !== null) return
-    // 在古诗组件里完成朗读 + 填空/排序才允许打卡
+    // 在古诗组件里点过听读或确认跟读后即可打卡
     if (!poemCompleted) return
     setCheckingIn(true)
     setError('')
@@ -1112,7 +1112,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
           </div>
         )}
 
-        {/* ════════ Step 4：古诗互动（朗读 + 排序/填空），完成后才能打卡 ════════ */}
+        {/* ════════ Step 4：古诗听读（点「听古诗」或「我已跟读完毕」即可打卡） ════════ */}
         {step === 4 && (
           <div className="flex h-full min-h-0 w-full max-w-4xl flex-1 flex-col overflow-hidden">
             <div className="flex w-full shrink-0 items-center">
@@ -1140,6 +1140,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                   poem={poem}
                   knownChars={Array.from(knownCharSet)}
                   compact
+                  simpleMode
                   onComplete={() => setPoemCompleted(true)}
                 />
               </div>
@@ -1270,7 +1271,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
               </Button>
               {!canCheckin && (
                 <p className="text-center text-[11px] text-muted-foreground md:text-xs">
-                  先在古诗里完成朗读和排序或填空，就能打卡啦
+                  先在古诗里点击「听古诗」或「我已跟读完毕」，就能打卡啦
                 </p>
               )}
             </>

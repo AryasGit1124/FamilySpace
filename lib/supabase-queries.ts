@@ -930,8 +930,10 @@ export async function upsertMastery(charId: string, status: MasteryStatus) {
 }
 
 /**
- * Step 3 听音结果回流：第一次就选对则正确连击 +1，连对 >= 2 次升一级并延长复习间隔；
- * 选错则连击归零、等级重置为 1，明天必须再考。
+ * Step 3 听音结果回流，按艾宾浩斯节奏推进：
+ * - 答错：等级重置为 1，明天必须再复习；
+ * - 首次答对：1 级 → 2 级（3 天后）、2 级 → 3 级（7 天后）、
+ *   3 级及以上保持 3 级（30 天后再考）。
  */
 export async function applyQuizResult(charId: string, firstTryCorrect: boolean) {
   const supabase = await requireSupabase()
@@ -946,21 +948,31 @@ export async function applyQuizResult(charId: string, firstTryCorrect: boolean) 
   const currentLevel = Number(existing?.mastery_level ?? 0)
   const currentStreak = Number(existing?.correct_streak ?? 0)
 
-  let masteryLevel = 1
-  let correctStreak = 0
-  if (firstTryCorrect) {
-    correctStreak = currentStreak + 1
-    masteryLevel = Math.max(currentLevel, 1)
-    if (correctStreak >= 2) masteryLevel = Math.min(masteryLevel + 1, 6)
+  let masteryLevel: number
+  let intervalDays: number
+  if (!firstTryCorrect) {
+    masteryLevel = 1
+    intervalDays = 1
+  } else {
+    const level = Math.max(currentLevel, 1)
+    if (level === 1) {
+      masteryLevel = 2
+      intervalDays = 3
+    } else if (level === 2) {
+      masteryLevel = 3
+      intervalDays = 7
+    } else {
+      masteryLevel = 3
+      intervalDays = 30
+    }
   }
-  const intervalDays = REVIEW_INTERVAL_DAYS[masteryLevel - 1] ?? 1
 
   const { error } = await supabase.from('child_mastery').upsert(
     {
       char_id: charId,
       status: firstTryCorrect ? 'mastered' : 'review',
       mastery_level: masteryLevel,
-      correct_streak: correctStreak,
+      correct_streak: firstTryCorrect ? currentStreak + 1 : 0,
       next_review_date: shiftDate(todayStr(), intervalDays),
       updated_at: new Date().toISOString(),
       ...familyPatch(familyId),
@@ -1035,43 +1047,63 @@ export async function fetchLiteracyCharsByIds(ids: string[]): Promise<LiteracyCh
 }
 
 /**
- * 今日待复习的字：next_review_date <= 今天且已学过（mastery_level > 0），
- * 掌握等级低的优先，最多取 limit 个。
+ * 今日待复习的字：next_review_date <= 今天的所有记录（mastered / review 都算），
+ * 随机取 limit 个，保证已「认识」的字到期也会重新出现。
  */
 export async function fetchDueReviewChars(today: string, limit: number): Promise<LiteracyChar[]> {
+  if (limit <= 0) return []
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const { data, error } = await scoped(
-    supabase.from('child_mastery').select('char_id, mastery_level'),
+    supabase.from('child_mastery').select('char_id').lte('next_review_date', today),
     familyId,
   )
-    .lte('next_review_date', today)
-    .gt('mastery_level', 0)
-    .order('mastery_level', { ascending: true })
-    .limit(limit)
   if (error) throw error
   const ids = (data ?? []).map((row) => row.char_id as string).filter(Boolean)
-  return fetchLiteracyCharsByIds(ids)
+  for (let i = ids.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[ids[i], ids[j]] = [ids[j], ids[i]]
+  }
+  return fetchLiteracyCharsByIds(ids.slice(0, limit))
 }
 
-/** 某级别里还没学过（child_mastery 无记录或 mastery_level = 0）的字，随机取 limit 个 */
+/**
+ * 某级别里还没学过（child_mastery 无任何记录）的字，随机取 limit 个。
+ * 已学黑名单取 child_mastery 全部 char_id（mastered / review 都算），
+ * 关联键是 child_mastery.char_id → literacy_chars.id。
+ * 当前级别的新字池空了时，自动向更高一级取字，避免重复学习已掌握的字。
+ */
 export async function fetchUnseenChars(level: number, limit: number): Promise<LiteracyChar[]> {
+  if (limit <= 0) return []
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const [charsRes, seenRes] = await Promise.all([
-    supabase.from('literacy_chars').select(LITERACY_CHAR_COLUMNS).eq('level', level),
-    scoped(supabase.from('child_mastery').select('char_id'), familyId).gt('mastery_level', 0),
+    // 当前级别及更高一级的字库，按级别升序，用于判断该级别是否已学完
+    supabase
+      .from('literacy_chars')
+      .select(LITERACY_CHAR_COLUMNS)
+      .gte('level', level)
+      .order('level', { ascending: true }),
+    // 黑名单：所有已学记录（不管 mastered 还是 review）
+    scoped(supabase.from('child_mastery').select('char_id'), familyId),
   ])
   if (charsRes.error) throw charsRes.error
   if (seenRes.error) throw seenRes.error
 
-  const seenIds = new Set((seenRes.data ?? []).map((row) => row.char_id as string))
+  const seenIds = new Set(
+    (seenRes.data ?? []).map((row) => row.char_id as string).filter(Boolean),
+  )
   const pool = ((charsRes.data ?? []) as LiteracyChar[]).filter((char) => !seenIds.has(char.id))
-  for (let i = pool.length - 1; i > 0; i--) {
+  if (pool.length === 0) return []
+
+  // 取新字池里级别最低的一组（当前级别学完会自动落到下一个级别）
+  const poolLevel = Math.min(...pool.map((char) => char.level))
+  const sameLevel = pool.filter((char) => char.level === poolLevel)
+  for (let i = sameLevel.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
-    ;[pool[i], pool[j]] = [pool[j], pool[i]]
+    ;[sameLevel[i], sameLevel[j]] = [sameLevel[j], sameLevel[i]]
   }
-  return pool.slice(0, limit)
+  return sameLevel.slice(0, limit)
 }
 
 /** 所有 status='mastered' 的汉字（去重、按级别课次排序）—— 用于 AI 故事 */
