@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useState, useEffect, useRef, type FormEvent, type ReactNode } from 'react'
 import { CalendarDays, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -37,6 +37,14 @@ export function GrowthRecordForm({ initialData, onClose, onSaved }: Props) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
+  // —— 纯文本日记草稿自动保存 ——
+  const draftKey = initialData ? `draft_growth_${initialData.id}` : 'draft_growth_new'
+  // typing：正在输入；saved：防抖已写入本地；idle：无操作
+  const [draftStatus, setDraftStatus] = useState<'idle' | 'typing' | 'saved'>('idle')
+  // 打开时若本地有未保存草稿，先暂存起来，等用户确认是否恢复
+  const [pendingDraft, setPendingDraft] = useState<string | null>(null)
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const existingPreview =
     initialData?.media_type === 'video'
       ? initialData.cover_url
@@ -46,6 +54,73 @@ export function GrowthRecordForm({ initialData, onClose, onSaved }: Props) {
     if (next === mode) return
     setMode(next)
     setError('')
+  }
+
+  // 打开页面时检测本地是否有未保存的草稿（仅对纯文本模式有意义）
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const saved = window.localStorage.getItem(draftKey)
+      if (saved && saved.trim().length > 0 && saved !== content) {
+        setPendingDraft(saved)
+      }
+    } catch {
+      /* localStorage 不可用时静默忽略 */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey])
+
+  // 组件卸载时清理防抖定时器，避免内存泄漏
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current)
+    }
+  }, [])
+
+  // 输入变更：纯文本模式下防抖 1s 写入 localStorage
+  const handleContentChange = (value: string) => {
+    setContent(value)
+    if (mode !== 'text') return
+    setDraftStatus('typing')
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(() => {
+      try {
+        if (value.trim()) {
+          window.localStorage.setItem(draftKey, value)
+        } else {
+          window.localStorage.removeItem(draftKey)
+        }
+        setDraftStatus('saved')
+      } catch {
+        setDraftStatus('idle')
+      }
+    }, 1000)
+  }
+
+  const restoreDraft = () => {
+    if (pendingDraft === null) return
+    setContent(pendingDraft)
+    setDraftStatus('saved')
+    setPendingDraft(null)
+  }
+
+  const discardDraft = () => {
+    try {
+      window.localStorage.removeItem(draftKey)
+    } catch {
+      /* ignore */
+    }
+    setPendingDraft(null)
+  }
+
+  const clearDraft = () => {
+    try {
+      window.localStorage.removeItem(draftKey)
+    } catch {
+      /* ignore */
+    }
+    setPendingDraft(null)
+    setDraftStatus('idle')
   }
 
   const canSubmit =
@@ -111,6 +186,8 @@ export function GrowthRecordForm({ initialData, onClose, onSaved }: Props) {
         })
         onSaved(created)
       }
+      // 写入数据库成功后清除本地草稿，避免下次打开再次提示恢复
+      clearDraft()
       onClose()
     } catch (err) {
       console.error('[GrowthForm] 保存记录失败:', err)
@@ -206,7 +283,7 @@ export function GrowthRecordForm({ initialData, onClose, onSaved }: Props) {
           <div className={mode === 'media' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
             <MediaFields
               content={content}
-              onContentChange={setContent}
+              onContentChange={handleContentChange}
               existingPreview={uploaded ? null : existingPreview}
               uploadedMedia={uploaded}
               submitting={submitting}
@@ -217,7 +294,35 @@ export function GrowthRecordForm({ initialData, onClose, onSaved }: Props) {
             />
           </div>
           <div className={mode === 'text' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-            <TextFields content={content} onContentChange={setContent} />
+            {/* 检测到本地草稿时的恢复横幅 */}
+            {pendingDraft !== null && (
+              <div className="mx-3 mt-2 shrink-0 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-500/40 dark:bg-amber-500/10">
+                <p className="text-xs text-amber-800 dark:text-amber-200">
+                  检测到上次未保存的草稿，是否恢复？
+                </p>
+                <div className="mt-1.5 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={restoreDraft}
+                    className="rounded-md bg-amber-500 px-3 py-1 text-xs font-medium text-white hover:bg-amber-600"
+                  >
+                    恢复草稿
+                  </button>
+                  <button
+                    type="button"
+                    onClick={discardDraft}
+                    className="rounded-md px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 dark:text-amber-300 dark:hover:bg-amber-500/20"
+                  >
+                    放弃
+                  </button>
+                </div>
+              </div>
+            )}
+            <TextFields
+              content={content}
+              onContentChange={handleContentChange}
+              draftStatus={draftStatus}
+            />
           </div>
         </form>
       </div>
@@ -320,7 +425,11 @@ function MediaFields({
 }
 
 /** Tab 2：占满全屏的长文本 */
-function TextFields({ content, onContentChange }: FieldProps) {
+function TextFields({
+  content,
+  onContentChange,
+  draftStatus,
+}: FieldProps & { draftStatus: 'idle' | 'typing' | 'saved' }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <textarea
@@ -331,6 +440,11 @@ function TextFields({ content, onContentChange }: FieldProps) {
         maxLength={3000}
         className="min-h-0 w-full flex-1 resize-none overflow-y-auto bg-transparent p-4 text-lg outline-none placeholder:text-muted-foreground"
       />
+      {/* 草稿保存状态提示 */}
+      <div className="shrink-0 px-4 pb-3 pt-1 text-right text-[11px] text-muted-foreground">
+        {draftStatus === 'typing' && <span>正在输入…</span>}
+        {draftStatus === 'saved' && <span className="text-emerald-600">草稿已自动保存到本地</span>}
+      </div>
     </div>
   )
 }
