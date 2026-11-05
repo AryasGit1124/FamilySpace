@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useState, type ReactNode } from 'react'
 import {
   mockCourseOptions,
   mockSchedule,
@@ -27,6 +27,10 @@ type AppState = {
   taskContents: SubjectContent[]
   scheduleGrid: ScheduleGrid
   weeklyTemplate: WeeklyTemplate
+  /** 左侧抽屉菜单是否展开：供 BottomTabBar 等全局组件共享，菜单打开时隐藏底部 Tab */
+  isMenuOpen: boolean
+  openMenu: () => void
+  closeMenu: () => void
   toggleTask: (taskId: string) => void
   setSubjectInTab: (subjectId: SubjectId, show: boolean) => void
   addSubject: (name: string, showInTab: boolean) => void
@@ -42,6 +46,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState(mockTasks)
   const [scheduleGrid, setScheduleGrid] = useState(mockScheduleGrid)
   const [weeklyTemplate, setWeeklyTemplate] = useState(mockWeeklyTemplate)
+  const [isMenuOpen, setIsMenuOpen] = useState(false)
+
+  // 用 useCallback 稳定引用，避免依赖它们的 useEffect 在每次渲染时都触发
+  // （否则会出现「点汉堡菜单 → 打开 → 渲染 → closeMenu 引用变化 → effect 立即关闭」的闪现 Bug）
+  const openMenu = useCallback(() => setIsMenuOpen(true), [])
+  const closeMenu = useCallback(() => setIsMenuOpen(false), [])
 
   const toggleTask = (taskId: string) =>
     setTasks((prev) =>
@@ -84,6 +94,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         taskContents: mockTaskContents,
         scheduleGrid,
         weeklyTemplate,
+        isMenuOpen,
+        openMenu,
+        closeMenu,
         toggleTask,
         setSubjectInTab,
         addSubject,

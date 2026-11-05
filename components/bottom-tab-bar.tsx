@@ -8,7 +8,7 @@ import { useAuth } from '@/components/auth-provider'
 import { fetchSubjects } from '@/lib/supabase-queries'
 import { getSubjectMeta } from '@/lib/subject-meta'
 import { SUBJECT_MODULES } from '@/lib/subject-modules'
-import { cn } from '@/lib/utils'
+import { cn, shouldHideBottomTab } from '@/lib/utils'
 
 type Tab = {
   href: string
@@ -99,8 +99,9 @@ export function BottomTabBar() {
   const isChild = role === 'child'
   const activeSubject = useMemo(() => getActiveSubject(pathname, tabSubjects), [pathname, tabSubjects])
 
-  // 登录页不显示底部导航（必须放在所有 hooks 之后，否则路由切换时 hooks 数量不一致会崩溃）
-  if (pathname === '/login') return null
+  // 是否渲染底部 Tab 完全由路由决定，与侧边栏开合状态无关（纯路由驱动 UI）。
+  // 必须放在所有 hooks 之后，否则路由切换时 hooks 数量不一致会崩溃
+  if (shouldHideBottomTab(pathname)) return null
 
   // 孩子端：今日 + 当前学科（在模块/学科页时）+ 星星商城；家长端：今日 + 全部学科
   const tabs: Tab[] = isChild

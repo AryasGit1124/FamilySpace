@@ -148,6 +148,16 @@ export default function ApprovalsPage() {
                     <p className="mt-0.5 text-sm font-semibold text-amber-700">
                       {item.score === null ? `线下课程 · 固定 ${item.stars} 颗星` : `得分：${item.score} 分`}
                     </p>
+                    {item.streak > 0 &&
+                      (item.streak % 5 === 0 ? (
+                        <p className="mt-1 rounded-md bg-orange-50 px-2 py-1 text-xs font-bold text-orange-600">
+                          🔥 连续打卡第 {item.streak} 天，本次可获得额外 3 星奖励！
+                        </p>
+                      ) : (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          连续打卡第 {item.streak} 天，继续加油！
+                        </p>
+                      ))}
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       {item.checkinDate} · 提交于 {formatTime(item.createdAt)}
                     </p>

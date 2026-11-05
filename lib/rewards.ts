@@ -1,6 +1,6 @@
 import { requireSupabase } from '@/lib/supabase'
 import { resolveFamilyId } from '@/lib/family'
-import { familyPatch, scoped } from '@/lib/supabase-queries'
+import { computeStreakForTask, familyPatch, scoped } from '@/lib/supabase-queries'
 import { accuracyToScore, estimateStarsFromScore, OFFLINE_CHECKIN_STARS, STREAK_BONUS_STARS } from '@/lib/star-rules'
 
 /** 当前日期 key：YYYY-MM-DD（本地时区） */
@@ -12,36 +12,20 @@ function todayKey(): string {
   return `${y}-${m}-${day}`
 }
 
-/** 相对今天偏移 n 天的日期 key（n=-1 即昨天） */
-function offsetDayKey(n: number): string {
-  const d = new Date()
-  d.setDate(d.getDate() + n)
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
 /**
- * 同一任务是否已连续打卡 5 天（今天 + 过去 4 天，驳回的不算）。
- * 满足则本次额外奖励 3 颗星。
+ * 同一任务从 anchorDate（含）往前的连续打卡天数是否恰好是 5 的倍数。
+ * 仅第 5 / 10 / 15 … 天触发 +3 星奖励，其余天数（如第 6、7 天）不奖励，
+ * 修复旧逻辑「满 5 天后每天都多发」的 Bug。
+ * 驳回的打卡不计入连续天数。
  */
-async function hasFiveDayStreak(
+async function isStreakMilestone(
   supabase: Awaited<ReturnType<typeof requireSupabase>>,
   familyId: string | null,
   taskId: string,
+  anchorDate: string,
 ): Promise<boolean> {
-  const past4 = [offsetDayKey(-1), offsetDayKey(-2), offsetDayKey(-3), offsetDayKey(-4)]
-  const { data } = await scoped(
-    supabase.from('checkins').select('checkin_date, status').eq('task_id', taskId).in('checkin_date', past4),
-    familyId,
-  )
-  const dates = new Set(
-    (data ?? [])
-      .filter((row) => String(row.status ?? 'approved') !== 'rejected')
-      .map((row) => String(row.checkin_date)),
-  )
-  return past4.every((day) => dates.has(day))
+  const streak = await computeStreakForTask(supabase, familyId, taskId, anchorDate)
+  return streak > 0 && streak % 5 === 0
 }
 
 /**
@@ -69,7 +53,7 @@ export async function handleTeacherCheckin(
     return { earned: 0 }
   }
 
-  const streakBonus = await hasFiveDayStreak(supabase, familyId, taskId)
+  const streakBonus = await isStreakMilestone(supabase, familyId, taskId, today)
   const earned = OFFLINE_CHECKIN_STARS + (streakBonus ? STREAK_BONUS_STARS : 0)
 
   // 家长端测试模式（dryRun）不写库，仅模拟结算
@@ -124,7 +108,7 @@ export async function handleGameCheckin(
   const baseStars = starRule
     ? Math.max(0, Math.floor(starRule(accuracy)))
     : estimateStarsFromScore(score)
-  const streakBonus = await hasFiveDayStreak(supabase, familyId, taskId)
+  const streakBonus = await isStreakMilestone(supabase, familyId, taskId, today)
   const stars = baseStars + (streakBonus ? STREAK_BONUS_STARS : 0)
 
   if (!dryRun) {

@@ -1,9 +1,9 @@
 import { requireSupabase } from '@/lib/supabase'
 import { resolveFamilyId, type UserRole } from '@/lib/family'
-import { isoDayOfWeek, shiftDate, todayStr } from '@/lib/dates'
+import { isoDayOfWeek, shiftDate, streakEndingAt, todayStr } from '@/lib/dates'
 import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
-import { estimateStarsFromScore } from '@/lib/star-rules'
+import { estimateStarsFromScore, STREAK_BONUS_STARS } from '@/lib/star-rules'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -696,10 +696,37 @@ export type PendingCheckinItem = {
   score: number | null
   /** 孩子端按学科规则预估、审核通过后发放的星星数 */
   stars: number
+  /** 以 checkinDate 为终点的连续打卡天数（驳回不计），用于前端提示与发星里程碑判断 */
+  streak: number
 }
 
 function notifyCheckinsChanged() {
   if (typeof window !== 'undefined') window.dispatchEvent(new Event('checkins-changed'))
+}
+
+/**
+ * 计算某个任务从 anchorDate（含）往前的连续打卡天数。
+ * - 驳回（rejected）的打卡不计入；同一天多次打卡只算 1 天。
+ * - 用 shiftDate 逐天减 1，正确处理跨月 / 跨年 / 时区。
+ */
+export async function computeStreakForTask(
+  supabase: Awaited<ReturnType<typeof requireSupabase>>,
+  familyId: string | null,
+  taskId: string,
+  anchorDate: string,
+): Promise<number> {
+  const { data } = await scoped(
+    supabase
+      .from('checkins')
+      .select('checkin_date, status')
+      .eq('task_id', taskId)
+      .lte('checkin_date', anchorDate),
+    familyId,
+  )
+  const dates = (data ?? [])
+    .filter((row) => String(row.status ?? 'approved') !== 'rejected')
+    .map((row) => String(row.checkin_date))
+  return streakEndingAt(dates, anchorDate)
 }
 
 /** 家长端待审核打卡列表：按提交时间正序，先来先审 */
@@ -723,21 +750,48 @@ export async function fetchPendingCheckins(): Promise<PendingCheckinItem[]> {
     return []
   }
 
-  return (data ?? []).map((row) => {
+  const rows = data ?? []
+
+  // 批量拉取相关任务的全部打卡记录，按任务分组得到「非驳回」的日期集合，
+  // 用于计算每条待审记录以 checkinDate 为终点的连续天数（避免 N+1 查询）。
+  const taskIds = [...new Set(rows.map((r) => r.task_id).filter((v): v is string => !!v))]
+  const datesByTask: Record<string, Set<string>> = {}
+  if (taskIds.length > 0) {
+    const { data: history } = await scoped(
+      supabase.from('checkins').select('task_id, checkin_date, status').in('task_id', taskIds),
+      familyId,
+    )
+    for (const r of history ?? []) {
+      if (String(r.status ?? 'approved') === 'rejected') continue
+      const tid = String(r.task_id)
+      if (!datesByTask[tid]) datesByTask[tid] = new Set()
+      datesByTask[tid].add(String(r.checkin_date))
+    }
+  }
+
+  return rows.map((row) => {
     const tasks = Array.isArray(row?.tasks) ? row.tasks[0] : row?.tasks
     const subjects = Array.isArray(tasks?.subjects) ? tasks.subjects[0] : tasks?.subjects
     const taskId = row.task_id ? String(row.task_id) : null
     const score = typeof row.score === 'number' ? row.score : null
+    const checkinDate = String(row.checkin_date ?? '')
+    const streak =
+      taskId && checkinDate && datesByTask[taskId]
+        ? streakEndingAt(datesByTask[taskId], checkinDate)
+        : 0
+    const baseStars = estimateStarsFromScore(score)
+    const streakBonus = streak > 0 && streak % 5 === 0 ? STREAK_BONUS_STARS : 0
     return {
       id: String(row.id),
       taskId,
       taskTitle: resolveTaskName(taskId, tasks?.title),
       subjectName: subjects?.name ?? null,
-      checkinDate: String(row.checkin_date ?? ''),
+      checkinDate,
       createdAt: String(row.created_at ?? ''),
       score,
-      stars:
-        typeof row.stars === 'number' ? Math.max(0, row.stars) : estimateStarsFromScore(score),
+      // 以审核时重算的星星为准（修复旧逻辑「超过 5 天后每天都发奖励」的 Bug）
+      stars: baseStars + streakBonus,
+      streak,
     }
   })
 }
@@ -761,8 +815,10 @@ export async function fetchPendingCheckinCount(): Promise<number> {
 
 /**
  * 家长确认打卡：checkins → approved，并写入 star_ledger 发放星星。
- * 发放数取自孩子端按学科规则算好的预估星星（checkins.stars）；
- * 旧记录没有 stars 时，按 score 兜底计算（线下 2 颗；线上 100 分 3 颗、80 分以上 2 颗、其他 1 颗）。
+ * 发放数在审核时实时重算：
+ *   - 基础星星按 score 估算（线下无 score → 2 颗；线上 100 分 3 颗、80 分以上 2 颗、其他 1 颗）。
+ *   - 额外奖励：仅当该任务以 checkinDate 为终点的连续打卡天数是 5 的倍数（第 5/10/15…天）时 +3 颗；
+ *     其余天数（如第 6、7 天）不发奖励，修复旧逻辑「满 5 天后每天都多发」的 Bug。
  * 使用 status = pending 作为条件更新，天然幂等，重复点击不会重复发星。
  * taskName 写入 star_ledger.task_name，供星星流水显示具体任务名。
  * @returns 实际发放的星星数（记录已被处理时返回 0）
@@ -777,16 +833,29 @@ export async function approveCheckin(checkinId: string, taskName?: string | null
     .eq('id', checkinId)
     .eq('family_id', familyId)
     .eq('status', 'pending')
-    .select('id, score, stars')
+    .select('id, task_id, checkin_date, score, stars')
 
   if (error) throw error
   const row = data?.[0]
   if (!row) return 0
 
-  const amount =
-    typeof row.stars === 'number'
-      ? Math.max(0, row.stars)
-      : estimateStarsFromScore(typeof row.score === 'number' ? row.score : null)
+  const taskId = row.task_id ? String(row.task_id) : null
+  const checkinDate = String(row.checkin_date ?? '')
+  const score = typeof row.score === 'number' ? row.score : null
+  const baseStars = estimateStarsFromScore(score)
+
+  let bonus = 0
+  if (taskId && checkinDate) {
+    const streak = await computeStreakForTask(supabase, familyId, taskId, checkinDate)
+    if (streak > 0 && streak % 5 === 0) bonus = STREAK_BONUS_STARS
+  }
+  const amount = baseStars + bonus
+
+  // 回写实际发放的星星数，保证 checkins 记录与 star_ledger 流水一致
+  if (typeof row.stars !== 'number' || row.stars !== amount) {
+    await supabase.from('checkins').update({ stars: amount }).eq('id', checkinId)
+  }
+
   if (amount > 0) {
     const { error: ledgerError } = await supabase
       .from('star_ledger')

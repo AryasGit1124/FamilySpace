@@ -40,7 +40,11 @@ export function Header({ onMenuOpen }: { onMenuOpen: () => void }) {
           {isParent && (
             <button
               type="button"
-              onClick={onMenuOpen}
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                onMenuOpen()
+              }}
               aria-label="打开菜单"
               className="flex size-10 items-center justify-center rounded-xl transition-colors hover:bg-muted active:bg-muted/80"
             >

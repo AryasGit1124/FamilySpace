@@ -199,7 +199,7 @@ export function GrowthRecordForm({ initialData, onClose, onSaved }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex h-[100dvh] flex-col overflow-hidden bg-white md:h-auto md:items-center md:justify-center md:bg-black/50 md:p-4"
+      className="fixed inset-0 z-[100] flex h-[100dvh] flex-col overflow-hidden bg-white md:h-auto md:items-center md:justify-center md:bg-black/50 md:p-4"
       onClick={() => {
         if (!submitting) onClose()
       }}
@@ -362,7 +362,7 @@ type FieldProps = {
   onContentChange: (value: string) => void
 }
 
-/** Tab 1：一个文本输入框 + 通用媒体上传器 */
+/** Tab 1：文本输入框撑满中间，媒体上传器固定在底部 */
 function MediaFields({
   content,
   onContentChange,
@@ -383,43 +383,49 @@ function MediaFields({
   onError: (message: string | null) => void
 }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:p-4">
-      <textarea
-        value={content}
-        onChange={(e) => onContentChange(e.target.value)}
-        placeholder="写点什么吧...（例如：今天学会了自己穿鞋）"
-        maxLength={3000}
-        className="h-24 w-full shrink-0 resize-none overflow-y-auto rounded-lg border p-3 text-base outline-none placeholder:text-muted-foreground"
-      />
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* 中间可滚动区：textarea 撑满除底部上传栏外的所有空间 */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:p-4">
+        <textarea
+          value={content}
+          onChange={(e) => onContentChange(e.target.value)}
+          placeholder="写点什么吧...（例如：今天学会了自己穿鞋）"
+          maxLength={3000}
+          className="min-h-0 w-full flex-1 resize-none overflow-y-auto rounded-lg border p-3 text-base outline-none placeholder:text-muted-foreground"
+        />
 
-      <MediaUploader
-        folder="growth"
-        multiple={false}
-        disabled={submitting}
-        label="📷 添加照片 / 视频"
-        onUploadSuccess={onUploadSuccess}
-        onUploadedRemove={onUploadedRemove}
-        onUploadingChange={onUploadingChange}
-        onError={onError}
-      />
-
-      {uploadedMedia?.mediaType === 'video' && (!uploadedMedia.coverUrl || /\.mov$/i.test(uploadedMedia.fileName)) && (
-        <p className="shrink-0 rounded-lg bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-800">
-          {uploadedMedia.coverUrl
-            ? 'iPhone 原始 MOV/HEVC 视频在部分安卓或电脑浏览器可能播放较慢，建议在手机相册导出为 MP4（H.264）后重新上传。'
-            : '当前浏览器无法解码这个视频的封面（常见于 MOV/HEVC），列表会用视频首帧展示；若其他设备播放转圈，建议导出为 MP4（H.264）后重新上传。'}
-        </p>
-      )}
-
-      {existingPreview && (
-        <div className="flex shrink-0 items-center gap-2 rounded-lg border p-1.5">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={existingPreview} alt="当前媒体" className="size-12 shrink-0 rounded object-cover" />
-          <p className="text-[11px] text-muted-foreground">
-            当前已有媒体；选择新文件并上传成功后会替换并删除旧文件
+        {uploadedMedia?.mediaType === 'video' && (!uploadedMedia.coverUrl || /\.mov$/i.test(uploadedMedia.fileName)) && (
+          <p className="shrink-0 rounded-lg bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-800">
+            {uploadedMedia.coverUrl
+              ? 'iPhone 原始 MOV/HEVC 视频在部分安卓或电脑浏览器可能播放较慢，建议在手机相册导出为 MP4（H.264）后重新上传。'
+              : '当前浏览器无法解码这个视频的封面（常见于 MOV/HEVC），列表会用视频首帧展示；若其他设备播放转圈，建议导出为 MP4（H.264）后重新上传。'}
           </p>
-        </div>
-      )}
+        )}
+
+        {existingPreview && (
+          <div className="flex shrink-0 items-center gap-2 rounded-lg border p-1.5">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={existingPreview} alt="当前媒体" className="size-12 shrink-0 rounded object-cover" />
+            <p className="text-[11px] text-muted-foreground">
+              当前已有媒体；选择新文件并上传成功后会替换并删除旧文件
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* 底部固定上传栏：贴在键盘上方，随时可点 */}
+      <div className="shrink-0 border-t bg-gray-50 p-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] md:p-4">
+        <MediaUploader
+          folder="growth"
+          multiple={false}
+          disabled={submitting}
+          label="📷 添加照片 / 视频"
+          onUploadSuccess={onUploadSuccess}
+          onUploadedRemove={onUploadedRemove}
+          onUploadingChange={onUploadingChange}
+          onError={onError}
+        />
+      </div>
     </div>
   )
 }

@@ -65,6 +65,22 @@ export function calcStreak(dates: string[]): number {
   return streak
 }
 
+/**
+ * 从 anchorDate（含）往前数连续打卡天数。
+ * dates 应为已去重、且已剔除「驳回」状态的日期集合。
+ * 用 shiftDate 逐天减 1，正确处理跨月 / 跨年 / 时区，避免直接字符串减法出错。
+ */
+export function streakEndingAt(dates: Iterable<string>, anchor: string): number {
+  const set = new Set(dates)
+  let streak = 0
+  let cursor = anchor
+  while (set.has(cursor)) {
+    streak += 1
+    cursor = shiftDate(cursor, -1)
+  }
+  return streak
+}
+
 /** 指定月份（YYYY-MM，缺省当月）的日历：返回 { day, dateKey, count }[]，count 为当天打卡次数 */
 export function buildCurrentMonthCalendar(checkinDates: string[], yearMonth?: string) {
   const nowKey = todayStr()

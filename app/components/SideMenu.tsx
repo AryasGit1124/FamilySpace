@@ -7,6 +7,7 @@ import {
   BarChart3,
   Camera,
   ClipboardCheck,
+  Home,
   Library,
   LogOut,
   Package,
@@ -23,6 +24,7 @@ import { cn } from '@/lib/utils'
 type MenuItem = { href: string; label: string; icon: LucideIcon; sub?: boolean }
 
 const MENU_ITEMS: MenuItem[] = [
+  { href: '/', label: '返回学习台 / 今日', icon: Home },
   { href: '/parent/approvals', label: '打卡审核', icon: ClipboardCheck },
   { href: '/growth', label: '成长档案', icon: Camera },
   { href: '/stats', label: '学习统计', icon: BarChart3 },
@@ -63,20 +65,21 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
 
   return (
     <>
-      {/* 遮罩层：点击关闭抽屉 */}
-      <div
-        aria-hidden="true"
-        onClick={onClose}
-        className={cn(
-          'fixed inset-0 z-40 bg-black/50 transition-opacity duration-300',
-          isOpen ? 'opacity-100' : 'pointer-events-none opacity-0',
-        )}
-      />
+      {/* 遮罩层：仅在菜单打开时渲染，点击关闭抽屉。
+          z-60 高于底部 Tab（z-50），打开抽屉时 Tab 只是被遮住、不会消失；
+          抽屉本体 z-70 位于遮罩之上。 */}
+      {isOpen && (
+        <div
+          aria-hidden="true"
+          onClick={onClose}
+          className="fixed inset-0 z-[60] bg-black/50"
+        />
+      )}
       {/* 抽屉本体：关闭时同时禁用指针事件，避免移动端不可见的抽屉拦截点击 */}
       <aside
         aria-hidden={!isOpen}
         className={cn(
-          'fixed left-0 top-0 z-50 h-full w-[85%] bg-white shadow-xl transition-transform duration-300 sm:w-72 lg:w-80',
+          'fixed left-0 top-0 z-[70] h-full w-[85%] bg-white shadow-xl transition-transform duration-300 sm:w-72 lg:w-80',
           isOpen ? 'translate-x-0' : 'pointer-events-none -translate-x-full',
         )}
       >

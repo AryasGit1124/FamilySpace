@@ -53,8 +53,9 @@ type TimeRange = (typeof TIME_RANGES)[number]['key']
 
 /**
  * 学习统计页：胶囊 Tab 置顶（概览 / 打卡日历 / 学科分布 / 星星流水）。
- * 外层高度锁定、禁止页面滚动；各 Tab 内容在剩余空间内自适应铺满，列表内部滚动。
- * 注意：全局布局已有 pt-16（Header）+ pb-24（底部 TabBar），故可用高度为 100dvh - 10rem。
+ * 手机端：整页自然滚动（min-h-screen + overflow-y-auto），单列堆叠，底部留 pb-20 避免遮挡。
+ * iPad/桌面（lg+）：锁定可视高度、左右/分栏铺满，各 Tab 内容在剩余空间内自适应，列表内部滚动。
+ * 注意：全局布局已有 pt-16（Header）与底部留白，故 lg 下可用高度按 100dvh - 6rem 计算。
  */
 export function StatsView({ checkinRecords, tasks, subjectCounts, starLedger }: Props) {
   const [active, setActive] = useState<TabKey>('overview')
@@ -179,7 +180,7 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, starLedger }: 
   )
 
   return (
-    <div className="flex h-[calc(100dvh-10rem)] flex-col overflow-hidden px-4 pt-1 md:px-6">
+    <div className="flex min-h-screen flex-col overflow-y-auto px-4 pb-20 pt-1 md:px-6 lg:h-[calc(100dvh-6rem)] lg:overflow-hidden lg:pb-0">
       {/* 顶部胶囊 Tab 栏：页面最顶部元素；概览/日历 Tab 下右侧显示共用的课程筛选 */}
       <div className="flex shrink-0 flex-wrap items-center gap-1 pb-3">
         {TABS.map((t) => {
@@ -223,7 +224,7 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, starLedger }: 
       <div className="min-h-0 flex-1">
         {/* 概览：双维度筛选 + 三张指标卡 */}
         {active === 'overview' && (
-          <div className="flex h-full flex-col">
+          <div className="flex flex-col lg:h-full">
             {/* 紧凑筛选栏：左 本月/本年，右 课程下拉 */}
             <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 pb-3">
               <div className="flex gap-1 rounded-full bg-slate-100 p-0.5">
@@ -263,7 +264,7 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, starLedger }: 
               </select>
             </div>
 
-            <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:min-h-0 lg:flex-1">
               <StatCard icon="📅" value={totalDays} label={`${rangeLabel}打卡（天）`} valueClass="text-sky-600" bgClass="from-sky-100 to-blue-50" />
               <StatCard icon="🔥" value={streak} label={`${rangeLabel}连续（天）`} valueClass="text-orange-500" bgClass="from-orange-100 to-amber-50" />
               <StatCard icon="⭐" value={overviewEarnedStars} label={`${rangeLabel}获得（颗）`} valueClass="text-amber-500" bgClass="from-amber-100 to-yellow-50" />
@@ -276,7 +277,7 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, starLedger }: 
 
         {/* 打卡日历：月份切换 + 课程筛选 + 大尺寸月历铺满 */}
         {active === 'calendar' && (
-          <section className="flex h-full flex-col rounded-3xl bg-white p-4 shadow-sm md:p-5">
+          <section className="flex flex-col rounded-3xl bg-white p-4 shadow-sm md:p-5 lg:h-full">
             <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
               <button
                 type="button"
@@ -303,7 +304,7 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, starLedger }: 
               ))}
             </div>
 
-            <div className="mt-2 grid min-h-0 flex-1 grid-cols-7 gap-1.5 [grid-auto-rows:1fr]">
+            <div className="mt-2 grid grid-cols-7 gap-1.5 lg:min-h-0 lg:flex-1 lg:[grid-auto-rows:1fr]">
               {Array.from({ length: calendar.firstDayWeekday }).map((_, i) => (
                 <div key={`pad-${i}`} />
               ))}
@@ -346,16 +347,16 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, starLedger }: 
 
         {/* 学科分布柱状图 */}
         {active === 'subjects' && (
-          <section className="flex h-full flex-col rounded-3xl bg-white p-4 shadow-sm md:p-5">
+          <section className="flex flex-col rounded-3xl bg-white p-4 shadow-sm md:p-5 lg:h-full">
             <h2 className="mb-3 shrink-0 text-base font-bold text-slate-800 md:text-lg">
               学科打卡分布
             </h2>
             {subjectCounts.length === 0 ? (
-              <p className="flex flex-1 items-center justify-center text-sm text-slate-400">
+              <p className="flex items-center justify-center py-10 text-sm text-slate-400 lg:flex-1">
                 暂无打卡数据
               </p>
             ) : (
-              <div className="flex min-h-0 flex-1 items-end justify-around gap-2 px-2">
+              <div className="flex h-60 items-end justify-around gap-2 px-2 lg:h-auto lg:min-h-0 lg:flex-1">
                 {subjectCounts.map((s) => {
                   const heightPct = Math.max(4, Math.round((s.count / maxSubjectCount) * 100))
                   return (
@@ -386,7 +387,7 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, starLedger }: 
 
         {/* 星星流水明细 */}
         {active === 'ledger' && (
-          <section className="flex h-full flex-col rounded-3xl bg-white p-4 shadow-sm md:p-5">
+          <section className="flex flex-col rounded-3xl bg-white p-4 shadow-sm md:p-5 lg:h-full">
             <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-2">
               <h2 className="text-base font-bold text-slate-800 md:text-lg">⭐ 星星流水</h2>
               <div className="flex gap-1">
@@ -413,11 +414,11 @@ export function StatsView({ checkinRecords, tasks, subjectCounts, starLedger }: 
             </div>
 
             {filteredLedger.length === 0 ? (
-              <p className="flex flex-1 items-center justify-center text-sm text-slate-400">
+              <p className="flex items-center justify-center py-10 text-sm text-slate-400 lg:flex-1">
                 还没有星星记录哦，快去打卡吧！
               </p>
             ) : (
-              <ul className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto pr-1">
+              <ul className="divide-y divide-slate-100 pr-1 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
                 {filteredLedger.map((row) => {
                   const isEarn = row.amount > 0
                   const label = row.taskName?.trim() || row.reason
