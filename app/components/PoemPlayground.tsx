@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button'
 import type { Poem } from '@/lib/supabase-queries'
 import { speakChinese, speakLinesAsync, stopSpeak } from '@/lib/tts'
+import { useAudioRecorder } from '@/lib/use-audio-recorder'
 import { cn } from '@/lib/utils'
 
 /** 汉字判断（用于填空挖空，标点不参与） */
@@ -92,6 +93,7 @@ export function PoemPlayground({
   compact = false,
   initialTab = 'read',
   simpleMode = false,
+  requireRecording = false,
 }: {
   poem: Poem
   /** 孩子已认识的字，朗读时绿色高亮 */
@@ -103,10 +105,24 @@ export function PoemPlayground({
   initialTab?: TabKey
   /** 简化模式：只展示古诗与听读，点「听古诗」或「我已跟读完毕」即可完成，不再要求排序/填空 */
   simpleMode?: boolean
+  /** 逐句跟读录音模式：每句都要录音，全部录完才算完成（识字向导 Step 4 使用） */
+  requireRecording?: boolean
 }) {
   const [tab, setTab] = useState<TabKey>(initialTab)
 
-  const lines = useMemo(() => poem.content.map((line) => line.trim()).filter(Boolean), [poem])
+  /**
+   * 古诗逐句展示：跟读录音模式下按标点（，。？！；）再拆一次，
+   * 确保每句单独一行、单独录音；其它模式保持原有的整行展示。
+   */
+  const lines = useMemo(() => {
+    const raw = poem.content.map((line) => line.trim()).filter(Boolean)
+    if (!requireRecording) return raw
+    const pieces = raw
+      .flatMap((line) => line.split(/[，。？！；,?!;]/))
+      .map((line) => line.trim())
+      .filter(Boolean)
+    return pieces.length > 0 ? pieces : raw
+  }, [poem, requireRecording])
   const knownSet = useMemo(() => new Set(knownChars), [knownChars])
 
   // 朗读：点过（或整首听完）的句子
@@ -116,6 +132,27 @@ export function PoemPlayground({
 
   /** 简化模式下，点过听读或确认跟读即视为完成 */
   const [simpleDone, setSimpleDone] = useState(false)
+
+  // ── 逐句跟读录音（requireRecording）──
+  /** 每句的录音地址：句索引 → Blob URL */
+  const [recordings, setRecordings] = useState<Record<number, string>>({})
+  /** 当前正在录音的句索引 */
+  const [recordingIndex, setRecordingIndex] = useState<number | null>(null)
+  /** 句索引的 ref 版：录音停止回调里同步使用，避免闭包拿到旧值 */
+  const recordingIndexRef = useRef<number | null>(null)
+  /** 正在 TTS 播报的句索引（浅黄高亮） */
+  const [speakingIndex, setSpeakingIndex] = useState<number | null>(null)
+
+  const recorder = useAudioRecorder({
+    minDurationMs: 1000,
+    onRecorded: (url) => {
+      const index = recordingIndexRef.current
+      if (index === null) return
+      recordingIndexRef.current = null
+      setRecordingIndex(null)
+      setRecordings((prev) => ({ ...prev, [index]: url }))
+    },
+  })
 
   // 排序小游戏
   const [orderPool, setOrderPool] = useState<number[]>([])
@@ -141,8 +178,24 @@ export function PoemPlayground({
     setWrongOptions([])
     setFillDone(false)
     setSimpleDone(false)
+    // 换诗：清空逐句录音、停麦克风、停高亮
+    setRecordings({})
+    recordingIndexRef.current = null
+    setRecordingIndex(null)
+    setSpeakingIndex(null)
+    recorder.reset()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [poem.id])
+
+  /** 是否每一句都已录好音（跟读录音模式的通关条件） */
+  const allRecorded =
+    requireRecording && lines.length > 0 && lines.every((_, index) => Boolean(recordings[index]))
+
+  // 跟读录音模式：全部句子录完才解锁打卡，删掉任一句录音则重新锁定
+  useEffect(() => {
+    if (!requireRecording) return
+    setSimpleDone(allRecorded)
+  }, [requireRecording, allRecorded])
 
   /** 进入填空页 / 换一题时自动读题（点击 Tab 属于用户手势，iPad 不会拦截） */
   useEffect(() => {
@@ -155,6 +208,45 @@ export function PoemPlayground({
   const orderDone = lines.length > 0 && picked.length === lines.length
   const readDone = lines.length > 0 && readLines.size >= lines.length
   const gameDone = fillDone || orderDone
+
+  /** 为某一句开始录音（录音前掐断 TTS，避免录进机器音） */
+  const startLineRecord = async (index: number) => {
+    if (recordingIndex !== null || recorder.isRecording) return
+    setSpeakingIndex(null)
+    stopSpeak()
+    recordingIndexRef.current = index
+    setRecordingIndex(index)
+    const ok = await recorder.start()
+    if (!ok) {
+      recordingIndexRef.current = null
+      setRecordingIndex(null)
+    }
+  }
+
+  /** 重录某一句：清掉该句旧录音后重新开始 */
+  const reRecordLine = async (index: number) => {
+    setRecordings((prev) => {
+      const next = { ...prev }
+      delete next[index]
+      return next
+    })
+    recorder.reset()
+    await startLineRecord(index)
+  }
+
+  /** 回听某一句的录音 */
+  const playLineRecording = (index: number) => {
+    stopSpeak()
+    recorder.play(recordings[index])
+  }
+
+  // 录音过短被丢弃时，收起「正在录音」状态
+  useEffect(() => {
+    if (recordingIndex !== null && !recorder.isRecording && recorder.hint) {
+      recordingIndexRef.current = null
+      setRecordingIndex(null)
+    }
+  }, [recordingIndex, recorder.isRecording, recorder.hint])
 
   /** 完成朗读 + 填空/排序后通知宿主（只触发一次） */
   const completedRef = useRef(false)
@@ -173,24 +265,26 @@ export function PoemPlayground({
   /** 听全诗：逐句朗读，播完标记全部句子已读；简化模式下点按即视为完成 */
   const listenAll = useCallback(async () => {
     if (lines.length === 0) return
-    if (simpleMode) setSimpleDone(true)
+    if (simpleMode && !requireRecording) setSimpleDone(true)
     const token = ++readTokenRef.current
     stopSpeak()
+    setSpeakingIndex(null)
     setReading(true)
     await speakLinesAsync(lines)
     if (readTokenRef.current !== token) return
     setReading(false)
     setReadLines(new Set(lines.map((_, i) => i)))
-  }, [lines, simpleMode])
+  }, [lines, simpleMode, requireRecording])
 
-  /** 点单句朗读，并记录该句已读 */
+  /** 点单句朗读，并记录该句已读；播放期间该句浅黄高亮 */
   const speakLine = (index: number) => {
     const line = lines[index]
     if (!line) return
     readTokenRef.current += 1
     stopSpeak()
     setReading(false)
-    speakChinese(line)
+    setSpeakingIndex(index)
+    speakChinese(line, () => setSpeakingIndex((cur) => (cur === index ? null : cur)))
     setReadLines((prev) => new Set(prev).add(index))
   }
 
@@ -316,43 +410,149 @@ export function PoemPlayground({
             </p>
           )}
 
-          <ul className={cn('flex flex-col gap-1', compact && 'min-h-0 flex-1 justify-center overflow-hidden')}>
-            {lines.map((line, index) => (
-              <li key={`${poem.id}-${index}`}>
-                <button
-                  type="button"
-                  onClick={() => speakLine(index)}
-                  className={cn(
-                    'flex w-full items-center justify-between gap-2 rounded-xl px-2 text-left leading-relaxed transition-colors hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
-                    compact ? 'py-0.5 text-xl md:text-2xl' : 'py-1.5 text-lg',
-                    readLines.has(index) && 'bg-emerald-50/60',
-                  )}
-                  aria-label={`朗读：${line}`}
-                >
-                  <span className="font-bold tracking-wide">{renderLine(line)}</span>
-                  <Volume2 className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-                </button>
-              </li>
-            ))}
+          <ul
+            className={cn(
+              'flex flex-col gap-1',
+              compact && 'min-h-0 flex-1 overflow-hidden',
+              compact && !requireRecording && 'justify-center',
+              requireRecording && compact && 'justify-start overflow-y-auto',
+            )}
+          >
+            {requireRecording
+              ? lines.map((line, index) => {
+                  const recorded = recordings[index]
+                  const recordingThis = recordingIndex === index
+                  return (
+                    <li
+                      key={`${poem.id}-${index}`}
+                      className={cn(
+                        'shrink-0 rounded-xl py-0.5 transition-colors',
+                        speakingIndex === index && 'bg-amber-100/80',
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2 px-2">
+                        <span
+                          className={cn(
+                            'font-bold tracking-wide',
+                            compact ? 'text-xl md:text-2xl' : 'text-lg',
+                          )}
+                        >
+                          {renderLine(line)}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="shrink-0 px-2 text-[11px]"
+                          onClick={() => speakLine(index)}
+                        >
+                          🔊 听这句
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 px-2 pb-1">
+                        {recorded ? (
+                          <>
+                            <Button
+                              size="sm"
+                              className="px-2 text-[11px]"
+                              onClick={() => playLineRecording(index)}
+                            >
+                              ▶️ 听我的声音
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="px-2 text-[11px]"
+                              onClick={() => void reRecordLine(index)}
+                            >
+                              🔄 重录
+                            </Button>
+                            <span className="text-[11px] font-semibold text-emerald-600">
+                              已录音 ✓
+                            </span>
+                          </>
+                        ) : recordingThis ? (
+                          <Button
+                            size="sm"
+                            className="animate-pulse bg-red-600 px-2 text-[11px] text-white hover:bg-red-600"
+                            onClick={() => recorder.stop()}
+                          >
+                            🔴 正在录音...点击停止
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="px-2 text-[11px]"
+                            onClick={() => void startLineRecord(index)}
+                          >
+                            🎤 跟读
+                          </Button>
+                        )}
+                        {!recorded && !recordingThis && (
+                          <span className="text-[11px] text-muted-foreground">
+                            点「跟读」录这一句
+                          </span>
+                        )}
+                      </div>
+                    </li>
+                  )
+                })
+              : lines.map((line, index) => (
+                  <li key={`${poem.id}-${index}`}>
+                    <button
+                      type="button"
+                      onClick={() => speakLine(index)}
+                      className={cn(
+                        'flex w-full items-center justify-between gap-2 rounded-xl px-2 text-left leading-relaxed transition-colors hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+                        compact ? 'py-0.5 text-xl md:text-2xl' : 'py-1.5 text-lg',
+                        readLines.has(index) && 'bg-emerald-50/60',
+                        speakingIndex === index && 'bg-amber-100/80',
+                      )}
+                      aria-label={`朗读：${line}`}
+                    >
+                      <span className="font-bold tracking-wide">{renderLine(line)}</span>
+                      <Volume2 className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    </button>
+                  </li>
+                ))}
           </ul>
+
+          {requireRecording && (
+            <p className="shrink-0 text-center text-[11px] text-muted-foreground md:text-xs">
+              🎙️ 每一句都要跟读录音，才能通关打卡哦！（已录 {Object.keys(recordings).length}/
+              {lines.length} 句）
+            </p>
+          )}
+          {recorder.hint && (
+            <p className="shrink-0 text-center text-[11px] text-destructive">{recorder.hint}</p>
+          )}
+
           {simpleMode ? (
-            <div className="flex flex-col gap-1.5">
-              <Button
-                size="sm"
-                variant={simpleDone ? 'secondary' : 'outline'}
-                className="w-full"
-                disabled={simpleDone}
-                onClick={() => setSimpleDone(true)}
-              >
-                <CheckCircle2 aria-hidden="true" />
-                {simpleDone ? '已跟读，可以打卡' : '我已跟读完毕'}
-              </Button>
-              <p className="text-center text-xs text-muted-foreground">
-                {simpleDone
-                  ? '打卡已解锁，点底部「完成学习打卡」即可'
-                  : '点「听古诗」或「我已跟读完毕」就能解锁打卡'}
+            requireRecording ? (
+              <p className="shrink-0 rounded-xl bg-muted/50 px-3 py-1.5 text-center text-xs text-muted-foreground">
+                {allRecorded
+                  ? '✅ 每句都录好了，点底部「完成学习打卡」通关吧！'
+                  : `🎙️ 还有 ${lines.length - Object.keys(recordings).length} 句没录音`}
               </p>
-            </div>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                <Button
+                  size="sm"
+                  variant={simpleDone ? 'secondary' : 'outline'}
+                  className="w-full"
+                  disabled={simpleDone}
+                  onClick={() => setSimpleDone(true)}
+                >
+                  <CheckCircle2 aria-hidden="true" />
+                  {simpleDone ? '已跟读，可以打卡' : '我已跟读完毕'}
+                </Button>
+                <p className="text-center text-xs text-muted-foreground">
+                  {simpleDone
+                    ? '打卡已解锁，点底部「完成学习打卡」即可'
+                    : '点「听古诗」或「我已跟读完毕」就能解锁打卡'}
+                </p>
+              </div>
+            )
           ) : (
             <p className="text-xs text-muted-foreground">
               {readDone ? '朗读完成，去试试排序或填空吧' : '点句子听读音，跟着读一遍'}

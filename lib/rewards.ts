@@ -1,7 +1,7 @@
 import { requireSupabase } from '@/lib/supabase'
 import { resolveFamilyId } from '@/lib/family'
 import { computeStreakForTask, familyPatch, scoped } from '@/lib/supabase-queries'
-import { accuracyToScore, estimateStarsFromScore, OFFLINE_CHECKIN_STARS, STREAK_BONUS_STARS } from '@/lib/star-rules'
+import { accuracyToScore, baseStarsForCheckin, estimateStarsFromScore, STREAK_BONUS_STARS } from '@/lib/star-rules'
 
 /** 当前日期 key：YYYY-MM-DD（本地时区） */
 function todayKey(): string {
@@ -29,9 +29,10 @@ async function isStreakMilestone(
 }
 
 /**
- * Teacher / 线下课程打卡（待家长审核）。
+ * 老师授课（format = 'teacher'）/ 线下课程打卡（待家长审核）。
  *
- * - 预估固定 2 颗星；同一任务连续打卡 5 天时额外奖励 3 颗。
+ * - 基础星星按 tasks.format 判断：teacher 固定 2 颗（与提交视频/文字等形式无关）；
+ *   同一任务连续打卡第 5/10/15… 天时额外奖励 3 颗。
  * - 写入 checkins（status = 'pending'）。
  * - 孩子端不写 star_ledger，家长在「打卡审核」确认后才真正到账。
  * - 幂等：今天该任务已打过卡则返回 0，避免重复提交。
@@ -53,8 +54,17 @@ export async function handleTeacherCheckin(
     return { earned: 0 }
   }
 
+  // 判断授课形式必须读 tasks.format（不能用 type 的 online / offline）
+  const { data: taskRow } = await scoped(
+    supabase.from('tasks').select('format').eq('id', taskId),
+    familyId,
+  ).maybeSingle()
+  const format = (taskRow?.format as string | null | undefined) ?? null
+  console.log('[TeacherCheckin] task format =', format)
+
   const streakBonus = await isStreakMilestone(supabase, familyId, taskId, today)
-  const earned = OFFLINE_CHECKIN_STARS + (streakBonus ? STREAK_BONUS_STARS : 0)
+  const baseStars = baseStarsForCheckin(format, null)
+  const earned = baseStars + (streakBonus ? STREAK_BONUS_STARS : 0)
 
   // 家长端测试模式（dryRun）不写库，仅模拟结算
   if (!dryRun) {

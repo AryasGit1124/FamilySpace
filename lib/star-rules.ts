@@ -14,7 +14,7 @@ export function accuracyToScore(firstTryCorrect: number, totalQuestions: number)
 
 /**
  * 按分数预估星星：
- * - score 为 null（线下课程，无正确率）→ 2 颗
+ * - score 为 null（无正确率）→ 2 颗
  * - 线上全对（100 分）→ 3 颗
  * - 80 分及以上 → 2 颗
  * - 其他 → 保底 1 颗
@@ -24,4 +24,22 @@ export function estimateStarsFromScore(score: number | null | undefined): number
   if (score >= 100) return 3
   if (score >= 80) return 2
   return 1
+}
+
+/** 任务授课形式：teacher = 老师授课，self = 自学 / 线上游戏 */
+export type TaskFormat = 'teacher' | 'self'
+
+/**
+ * 按任务的 format 字段计算打卡基础星星（孩子端预估与家长审核发星共用）。
+ * - format === 'teacher'（老师授课）：无论提交视频、文字还是其他形式，固定 2 颗。
+ * - format === 'self'（自学）：按线上得分，100 分 3 颗、80 分及以上 2 颗、其他 1 颗。
+ *
+ * 注意：不能用 type（online/offline）判断，必须以 tasks.format 为准。
+ */
+export function baseStarsForCheckin(
+  format: string | null | undefined,
+  score: number | null | undefined,
+): number {
+  if (format === 'teacher') return OFFLINE_CHECKIN_STARS
+  return estimateStarsFromScore(score)
 }

@@ -3,7 +3,7 @@ import { resolveFamilyId, type UserRole } from '@/lib/family'
 import { isoDayOfWeek, shiftDate, streakEndingAt, todayStr } from '@/lib/dates'
 import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
-import { estimateStarsFromScore, STREAK_BONUS_STARS } from '@/lib/star-rules'
+import { baseStarsForCheckin, STREAK_BONUS_STARS } from '@/lib/star-rules'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -738,7 +738,7 @@ export async function fetchPendingCheckins(): Promise<PendingCheckinItem[]> {
   const { data, error } = await scoped(
     supabase.from('checkins').select(
       `id, task_id, checkin_date, created_at, stars, score,
-       tasks ( title, subjects ( name ) )`,
+       tasks ( title, format, subjects ( name ) )`,
     ),
     familyId,
   )
@@ -773,14 +773,17 @@ export async function fetchPendingCheckins(): Promise<PendingCheckinItem[]> {
     const tasks = Array.isArray(row?.tasks) ? row.tasks[0] : row?.tasks
     const subjects = Array.isArray(tasks?.subjects) ? tasks.subjects[0] : tasks?.subjects
     const taskId = row.task_id ? String(row.task_id) : null
+    const taskFormat = (tasks?.format as string | null | undefined) ?? null
     const score = typeof row.score === 'number' ? row.score : null
     const checkinDate = String(row.checkin_date ?? '')
     const streak =
       taskId && checkinDate && datesByTask[taskId]
         ? streakEndingAt(datesByTask[taskId], checkinDate)
         : 0
-    const baseStars = estimateStarsFromScore(score)
+    // 以 tasks.format 判断授课形式：teacher 固定 2 颗，self 按得分
+    const baseStars = baseStarsForCheckin(taskFormat, score)
     const streakBonus = streak > 0 && streak % 5 === 0 ? STREAK_BONUS_STARS : 0
+    console.log('[Approvals] task format =', taskFormat, '| score =', score, '| baseStars =', baseStars)
     return {
       id: String(row.id),
       taskId,
@@ -815,8 +818,9 @@ export async function fetchPendingCheckinCount(): Promise<number> {
 
 /**
  * 家长确认打卡：checkins → approved，并写入 star_ledger 发放星星。
- * 发放数在审核时实时重算：
- *   - 基础星星按 score 估算（线下无 score → 2 颗；线上 100 分 3 颗、80 分以上 2 颗、其他 1 颗）。
+ * 发放数在审核时按 tasks.format 实时重算：
+ *   - format = 'teacher'（老师授课）：无论提交视频/文字/图片，基础固定 2 颗。
+ *   - format = 'self'（自学）：按 score 计算，100 分 3 颗、80 分及以上 2 颗、其他 1 颗。
  *   - 额外奖励：仅当该任务以 checkinDate 为终点的连续打卡天数是 5 的倍数（第 5/10/15…天）时 +3 颗；
  *     其余天数（如第 6、7 天）不发奖励，修复旧逻辑「满 5 天后每天都多发」的 Bug。
  * 使用 status = pending 作为条件更新，天然幂等，重复点击不会重复发星。
@@ -842,7 +846,18 @@ export async function approveCheckin(checkinId: string, taskName?: string | null
   const taskId = row.task_id ? String(row.task_id) : null
   const checkinDate = String(row.checkin_date ?? '')
   const score = typeof row.score === 'number' ? row.score : null
-  const baseStars = estimateStarsFromScore(score)
+
+  // 授课形式必须读 tasks.format：teacher（老师授课）固定 2 颗，self（自学）按得分
+  let taskFormat: string | null = null
+  if (taskId) {
+    const { data: taskRow } = await scoped(
+      supabase.from('tasks').select('format').eq('id', taskId),
+      familyId,
+    ).maybeSingle()
+    taskFormat = (taskRow?.format as string | null | undefined) ?? null
+  }
+  const baseStars = baseStarsForCheckin(taskFormat, score)
+  console.log('[ApproveCheckin] task format =', taskFormat, '| score =', score, '| baseStars =', baseStars)
 
   let bonus = 0
   if (taskId && checkinDate) {

@@ -29,6 +29,7 @@ import { handleGameCheckin } from '@/lib/rewards'
 import { todayStr } from '@/lib/dates'
 import { resolveWordCard, type WordCard } from '@/lib/literacy-words'
 import { speakChar, speakChinese, speakLinesAsync, stopSpeak } from '@/lib/tts'
+import { useAudioRecorder } from '@/lib/use-audio-recorder'
 import { cn } from '@/lib/utils'
 
 const LEVELS = [1, 2, 3, 4, 5, 6]
@@ -244,6 +245,18 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   /** 听音选字：答对后防止连点的标记 */
   const answeredRef = useRef(false)
 
+  // ── Step 2 学字卡：单字录音读字（录满 1 秒才解锁「去测试」）──
+  const {
+    isRecording,
+    audioUrl: recordedUrl,
+    hint: recordHint,
+    toggle: toggleRecording,
+    reset: clearRecording,
+    play: playRecording,
+  } = useAudioRecorder({ minDurationMs: 1000 })
+  /** 是否已录好当前字的读音 */
+  const hasRecorded = recordedUrl !== null
+
   /** 今日任务里属于复习字的 id（其余为新学字），用于 Step 2 / Step 3 标签 */
   const [reviewCharIds, setReviewCharIds] = useState<string[]>([])
   /** Step 3 每个字的首次作答结果：true = 第一次就选对 */
@@ -404,6 +417,11 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   const currentCard = todayLearnChars[currentWordIndex]
   /** 字卡词图：Emoji / 组词 / 语境句统一以数据库 word 为准，缺失字段回退本地预置表 */
   const wordCard: WordCard | null = currentCard ? resolveWordCard(currentCard.char, currentCard) : null
+
+  // 切换到下一个字时清空录音，要求重新录制当前字（返回上一环节时录音仍保留）
+  useEffect(() => {
+    clearRecording()
+  }, [currentWordIndex, clearRecording])
 
   // 换字时重出「找一找」选项：目标字 + 3 个本级干扰字，顺序随机
   useEffect(() => {
@@ -994,6 +1012,45 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                     听一听
                   </button>
                 </div>
+
+                {/* 录音读字：必须自己读一遍才能解锁底部【去测试】 */}
+                <div className="w-full shrink-0 pt-2">
+                  {hasRecorded ? (
+                    <div className="flex items-stretch gap-2">
+                      <Button
+                        className="flex-1 gap-2 py-4 text-xl md:text-2xl"
+                        onClick={() => playRecording()}
+                      >
+                        ▶️ 听听我的声音
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="shrink-0 gap-1 px-4 py-4 text-base md:text-lg"
+                        onClick={clearRecording}
+                      >
+                        🔄 重新录音
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button
+                      className={cn(
+                        'w-full py-4 text-xl md:text-2xl',
+                        isRecording && 'animate-pulse bg-red-600 text-white hover:bg-red-600',
+                      )}
+                      onClick={toggleRecording}
+                    >
+                      {isRecording ? '🔴 正在录音...点击停止' : '🎤 点我读字'}
+                    </Button>
+                  )}
+                  <p className="mt-1 min-h-5 text-center text-xs text-muted-foreground md:text-sm">
+                    {recordHint ||
+                      (hasRecorded
+                        ? '录音完成，听听自己读得准不准～'
+                        : isRecording
+                          ? '把这个字读出来，再点停止'
+                          : '先读一读这个字，再点上面的按钮录音')}
+                  </p>
+                </div>
               </>
             ) : (
               /* ── 子页面 B：听音找字（上半屏巨大 Emoji 提示，下半屏 4 个巨字选项） ── */
@@ -1141,6 +1198,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                   knownChars={Array.from(knownCharSet)}
                   compact
                   simpleMode
+                  requireRecording
                   onComplete={() => setPoemCompleted(true)}
                 />
               </div>
@@ -1195,8 +1253,12 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                 <ArrowLeft className="size-4" aria-hidden="true" />
                 上一步
               </Button>
-              <Button className="flex-1 py-4 text-base md:text-lg" onClick={goToQuiz}>
-                我记住了，去测试
+              <Button
+                className="flex-1 py-4 text-base md:text-lg"
+                disabled={!hasRecorded || isRecording}
+                onClick={goToQuiz}
+              >
+                {hasRecorded ? '我记住了，去测试' : '先读一遍字，再解锁测试'}
                 <ArrowRight className="size-4" aria-hidden="true" />
               </Button>
             </>
@@ -1271,7 +1333,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
               </Button>
               {!canCheckin && (
                 <p className="text-center text-[11px] text-muted-foreground md:text-xs">
-                  先在古诗里点击「听古诗」或「我已跟读完毕」，就能打卡啦
+                  🎙️ 每一句都要跟读录音，才能通关打卡哦！
                 </p>
               )}
             </>
