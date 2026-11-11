@@ -16,11 +16,15 @@ export function useAudioRecorder(options?: {
   minDurationMs?: number
   /** 生成有效录音后的回调 */
   onRecorded?: (url: string) => void
+  /** 录音被丢弃（时长不足 / 处理失败）时的回调，调用方据此复位自己的 UI 状态 */
+  onDiscard?: (reason: 'too-short' | 'error') => void
 }) {
   const minDurationMs = options?.minDurationMs ?? 1000
   /** 回调放 ref：调用方每次渲染都会传新函数，避免触发内部重建 */
   const onRecordedRef = useRef(options?.onRecorded)
   onRecordedRef.current = options?.onRecorded
+  const onDiscardRef = useRef(options?.onDiscard)
+  onDiscardRef.current = options?.onDiscard
 
   const [isRecording, setIsRecording] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -171,7 +175,12 @@ export function useAudioRecorder(options?: {
    * 「发起 getUserMedia」都必须是同步调用。
    */
   const start = useCallback(async (): Promise<boolean> => {
-    if (startingRef.current || recorderRef.current) return false
+    if (startingRef.current) return false
+    if (recorderRef.current) {
+      // 已停止但未清理的残留实例：清掉，否则会误判为“仍在录音”而永远无法重新开始
+      if (recorderRef.current.state === 'inactive') recorderRef.current = null
+      else return false
+    }
     setHint('')
     setError(null)
 
@@ -289,23 +298,42 @@ export function useAudioRecorder(options?: {
         if (e.data.size > 0) chunksRef.current.push(e.data)
       }
       rec.onstop = () => {
-        const duration = Date.now() - recordStartRef.current
-        releaseMic()
-        setIsRecording(false)
-        // 时长不足：丢弃，不视为完成
-        if (duration < minDurationMs) {
+        try {
+          const duration = Date.now() - recordStartRef.current
+          // 时长不足：丢弃，不视为完成。提示语温和一些，孩子不至于挫败
+          if (duration < minDurationMs) {
+            chunksRef.current = []
+            setHint('哎呀，声音太小啦，按住多说一会儿哦～')
+            onDiscardRef.current?.('too-short')
+            return
+          }
+          const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
           chunksRef.current = []
-          setHint('录音太短啦，读完整再点停止～')
-          return
+          if (blob.size === 0) {
+            setHint('没录到声音，请检查麦克风后再试一次')
+            onDiscardRef.current?.('error')
+            return
+          }
+          if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current)
+          const url = URL.createObjectURL(blob)
+          audioUrlRef.current = url
+          setAudioUrl(url)
+          setHint('')
+          onRecordedRef.current?.(url)
+        } catch (err) {
+          console.error('[AudioRecorder] 处理录音数据失败:', err)
+          setHint('录音处理失败了，请重新录一次')
+          onDiscardRef.current?.('error')
+        } finally {
+          // 无论成功还是丢弃：解除监听、清空实例、强制释放麦克风、复位 UI。
+          // 这里漏掉 recorderRef 会导致 start() 一直返回 false，按钮从此点不动。
+          rec.onstop = null
+          rec.ondataavailable = null
+          rec.onerror = null
+          if (recorderRef.current === rec) recorderRef.current = null
+          releaseMic()
+          setIsRecording(false)
         }
-        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
-        chunksRef.current = []
-        if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current)
-        const url = URL.createObjectURL(blob)
-        audioUrlRef.current = url
-        setAudioUrl(url)
-        setHint('')
-        onRecordedRef.current?.(url)
       }
       rec.onerror = (event) => {
         console.error('[AudioRecorder] MediaRecorder error:', event)
@@ -332,8 +360,22 @@ export function useAudioRecorder(options?: {
 
   const stop = useCallback(() => {
     const rec = recorderRef.current
-    if (rec && rec.state === 'recording') rec.stop()
-  }, [])
+    if (rec && rec.state === 'recording') {
+      try {
+        rec.stop()
+      } catch (err) {
+        console.warn('[AudioRecorder] 停止录音失败，强制复位:', err)
+        recorderRef.current = null
+        releaseMic()
+        setIsRecording(false)
+      }
+      return
+    }
+    // 没有处于录音状态的实例：可能是残留或已自行停止，直接复位，避免按钮卡在「正在录音」
+    recorderRef.current = null
+    releaseMic()
+    setIsRecording(false)
+  }, [releaseMic])
 
   const toggle = useCallback(() => {
     if (isRecording) stop()

@@ -152,6 +152,11 @@ export function PoemPlayground({
       setRecordingIndex(null)
       setRecordings((prev) => ({ ...prev, [index]: url }))
     },
+    // 录音太短或处理失败：这一句没有录成，必须把「正在录音」状态复位，否则按钮会卡死
+    onDiscard: () => {
+      recordingIndexRef.current = null
+      setRecordingIndex(null)
+    },
   })
 
   // 排序小游戏
