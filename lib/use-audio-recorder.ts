@@ -25,6 +25,10 @@ export function useAudioRecorder(options?: {
   const [isRecording, setIsRecording] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [hint, setHint] = useState('')
+  /** 录音失败的真实原因（err.name / err.message），供 UI 红字展示 */
+  const [error, setError] = useState<{ name: string; message: string; tip: string } | null>(null)
+  /** 是否 HTTPS / localhost 安全上下文（非安全上下文浏览器不提供麦克风） */
+  const [isSecure, setIsSecure] = useState(true)
   /** 当前回听地址（ref 版，revoke 时不受闭包影响） */
   const audioUrlRef = useRef<string | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
@@ -33,6 +37,52 @@ export function useAudioRecorder(options?: {
   const recordStartRef = useRef(0)
   const startingRef = useRef(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  // 挂载时确认安全上下文：http 局域网访问时 Safari/Chrome 会直接屏蔽麦克风
+  useEffect(() => {
+    const secure = typeof window !== 'undefined' && window.isSecureContext
+    console.log(
+      '[AudioRecorder] 当前是否 HTTPS 安全环境:',
+      window.isSecureContext,
+      '| origin =',
+      window.location.origin,
+    )
+    console.log(
+      '[AudioRecorder] mediaDevices =',
+      typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices),
+      '| MediaRecorder =',
+      typeof MediaRecorder !== 'undefined',
+    )
+    setIsSecure(secure)
+  }, [])
+
+  /** 把 getUserMedia 的失败原因翻译成孩子/家长能看懂的提示 */
+  const describeError = (err: unknown): { name: string; message: string; tip: string } => {
+    const e = err as { name?: string; message?: string } | null
+    const name = e?.name ?? 'UnknownError'
+    const message = e?.message ?? String(err)
+    switch (name) {
+      case 'NotAllowedError':
+      case 'PermissionDeniedError':
+        return { name, message, tip: '麦克风权限被拒绝了，请在浏览器地址栏或系统设置里允许本站使用麦克风' }
+      case 'NotFoundError':
+      case 'DevicesNotFoundError':
+        return { name, message, tip: '没有找到麦克风设备，请检查耳机或设备是否插好' }
+      case 'NotReadableError':
+      case 'TrackStartError':
+        return { name, message, tip: '麦克风被其它应用占用了（比如正在通话/会议），关掉后再试' }
+      case 'OverconstrainedError':
+      case 'ConstraintNotSatisfiedError':
+        return { name, message, tip: '当前麦克风不支持所需参数，正在用默认参数重试' }
+      case 'SecurityError':
+      case 'TypeError':
+        return { name, message, tip: '当前环境不允许录音，请用 https 或 localhost 访问' }
+      case 'AbortError':
+        return { name, message, tip: '录音启动被中断了，请再点一次' }
+      default:
+        return { name, message, tip: '录音启动失败，请刷新页面后重试' }
+    }
+  }
 
   /** 停掉麦克风轨道：否则浏览器会一直显示录音中 */
   const releaseMic = useCallback(() => {
@@ -59,32 +109,106 @@ export function useAudioRecorder(options?: {
     setIsRecording(false)
     setAudioUrl(null)
     setHint('')
+    setError(null)
   }, [releaseMic])
 
-  /** 开始录音：先掐断 TTS，再要麦克风权限；返回是否真正开始录音 */
+  /**
+   * 开始录音。返回是否真正开始录音。
+   *
+   * Safari 对「用户手势」要求极严：getUserMedia 必须在点击事件的同步调用栈里发起，
+   * 之前若有 await 会被判定为非用户触发而直接拒绝。所以这里把 getUserMedia
+   * 提到函数最前面、在掐断 TTS 之前就同步调用。
+   */
   const start = useCallback(async (): Promise<boolean> => {
     if (startingRef.current || recorderRef.current) return false
     setHint('')
-    // 防止录进正在播报的机器音
+    setError(null)
+
+    // ① 先同步发起权限请求（保留用户手势），此时不能有任何 await
+    const mediaDevices = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined
+    if (!mediaDevices?.getUserMedia) {
+      const info = {
+        name: 'UnsupportedError',
+        message: 'navigator.mediaDevices.getUserMedia 不可用',
+        tip: window.isSecureContext
+          ? '当前浏览器不支持录音，请换用 Safari 或 Chrome 哦'
+          : '当前不是 https/localhost，浏览器禁止使用麦克风',
+      }
+      console.error('[AudioRecorder] 无法调用 getUserMedia:', info.name, info.message, '| isSecureContext =', window.isSecureContext)
+      setError(info)
+      alert(info.tip)
+      return false
+    }
+    if (typeof MediaRecorder === 'undefined') {
+      const info = { name: 'UnsupportedError', message: 'MediaRecorder 不存在', tip: '当前浏览器不支持录音，请换用 Safari 或 Chrome 哦' }
+      console.error('[AudioRecorder] 无法创建 MediaRecorder:', info.message)
+      setError(info)
+      alert(info.tip)
+      return false
+    }
+
+    let request: Promise<MediaStream>
+    try {
+      request = mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      })
+    } catch (syncErr) {
+      const info = describeError(syncErr)
+      console.error('[AudioRecorder] getUserMedia 同步抛错 | name =', info.name, '| message =', info.message)
+      setError(info)
+      alert(`${info.tip}\n\n(${info.name}: ${info.message})`)
+      return false
+    }
+
+    // ② 权限请求已发出，再掐断 TTS，避免把机器音录进去
     stopSpeak()
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel()
     }
-    // 非安全上下文（局域网 http）或旧浏览器可能没有 mediaDevices
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      alert('当前环境不支持录音，请用 Safari 或 Chrome 打开，并确保是 https 访问')
-      return false
-    }
-    if (typeof MediaRecorder === 'undefined') {
-      alert('当前浏览器不支持录音，请换用 Safari 或 Chrome 哦')
-      return false
-    }
+
     startingRef.current = true
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      let stream: MediaStream
+      try {
+        stream = await request
+      } catch (err) {
+        const info = describeError(err)
+        console.error(
+          '[AudioRecorder] getUserMedia 失败 | name =',
+          info.name,
+          '| message =',
+          info.message,
+          '| isSecureContext =',
+          typeof window !== 'undefined' && window.isSecureContext,
+          '| raw =',
+          err,
+        )
+        setError(info)
+        // 参数过于严格时回退到默认参数重试一次（部分老旧设备不支持回声消除）
+        if (info.name === 'OverconstrainedError' || info.name === 'ConstraintNotSatisfiedError') {
+          console.warn('[AudioRecorder] 回退为默认参数 { audio: true } 重试')
+          stream = await mediaDevices.getUserMedia({ audio: true })
+        } else {
+          alert(`${info.tip}\n\n(${info.name}: ${info.message})`)
+          return false
+        }
+      }
+
       streamRef.current = stream
       chunksRef.current = []
-      const rec = new MediaRecorder(stream)
+
+      let rec: MediaRecorder
+      try {
+        rec = new MediaRecorder(stream)
+      } catch (err) {
+        const info = describeError(err)
+        console.error('[AudioRecorder] 创建 MediaRecorder 失败 | name =', info.name, '| message =', info.message)
+        releaseMic()
+        setError({ ...info, tip: '当前浏览器无法创建录音器，请换用 Safari 或 Chrome 试试' })
+        alert('当前浏览器无法创建录音器，请换用 Safari 或 Chrome 试试')
+        return false
+      }
+
       rec.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data)
       }
@@ -107,17 +231,23 @@ export function useAudioRecorder(options?: {
         setHint('')
         onRecordedRef.current?.(url)
       }
+      rec.onerror = (event) => {
+        console.error('[AudioRecorder] MediaRecorder error:', event)
+      }
       recorderRef.current = rec
       recordStartRef.current = Date.now()
       rec.start()
       setIsRecording(true)
+      console.log('[AudioRecorder] 开始录音，mimeType =', rec.mimeType)
       return true
     } catch (err) {
-      console.error('[AudioRecorder] 录音启动失败:', err)
+      const info = describeError(err)
+      console.error('[AudioRecorder] 录音启动异常 | name =', info.name, '| message =', info.message, '| raw =', err)
       releaseMic()
       recorderRef.current = null
       setIsRecording(false)
-      alert('请允许使用麦克风，才能继续哦')
+      setError(info)
+      alert(`${info.tip}\n\n(${info.name}: ${info.message})`)
       return false
     } finally {
       startingRef.current = false
@@ -161,5 +291,5 @@ export function useAudioRecorder(options?: {
     }
   }, [])
 
-  return { isRecording, audioUrl, hint, start, stop, toggle, reset, play }
+  return { isRecording, audioUrl, hint, error, isSecure, start, stop, toggle, reset, play }
 }

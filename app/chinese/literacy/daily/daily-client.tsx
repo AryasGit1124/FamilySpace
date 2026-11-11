@@ -250,6 +250,8 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     isRecording,
     audioUrl: recordedUrl,
     hint: recordHint,
+    error: recordError,
+    isSecure: isSecureContext,
     toggle: toggleRecording,
     reset: clearRecording,
     play: playRecording,
@@ -1042,14 +1044,27 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                       {isRecording ? '🔴 正在录音...点击停止' : '🎤 点我读字'}
                     </Button>
                   )}
-                  <p className="mt-1 min-h-5 text-center text-xs text-muted-foreground md:text-sm">
-                    {recordHint ||
-                      (hasRecorded
-                        ? '录音完成，听听自己读得准不准～'
-                        : isRecording
-                          ? '把这个字读出来，再点停止'
-                          : '先读一读这个字，再点上面的按钮录音')}
-                  </p>
+                  {!isSecureContext ? (
+                    <p className="mt-1 text-center text-xs font-semibold text-destructive md:text-sm">
+                      请使用 HTTPS 或 localhost 访问才能录音
+                    </p>
+                  ) : recordError ? (
+                    <p className="mt-1 text-center text-xs font-semibold text-destructive md:text-sm">
+                      {recordError.tip}
+                      <span className="ml-1 font-normal text-muted-foreground">
+                        ({recordError.name})
+                      </span>
+                    </p>
+                  ) : (
+                    <p className="mt-1 min-h-5 text-center text-xs text-muted-foreground md:text-sm">
+                      {recordHint ||
+                        (hasRecorded
+                          ? '录音完成，听听自己读得准不准～'
+                          : isRecording
+                            ? '把这个字读出来，再点停止'
+                            : '先读一读这个字，再点上面的按钮录音')}
+                    </p>
+                  )}
                 </div>
               </>
             ) : (

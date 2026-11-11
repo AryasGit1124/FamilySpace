@@ -240,13 +240,13 @@ export function PoemPlayground({
     recorder.play(recordings[index])
   }
 
-  // 录音过短被丢弃时，收起「正在录音」状态
+  // 录音过短被丢弃或启动失败时，收起「正在录音」状态
   useEffect(() => {
-    if (recordingIndex !== null && !recorder.isRecording && recorder.hint) {
+    if (recordingIndex !== null && !recorder.isRecording && (recorder.hint || recorder.error)) {
       recordingIndexRef.current = null
       setRecordingIndex(null)
     }
-  }, [recordingIndex, recorder.isRecording, recorder.hint])
+  }, [recordingIndex, recorder.isRecording, recorder.hint, recorder.error])
 
   /** 完成朗读 + 填空/排序后通知宿主（只触发一次） */
   const completedRef = useRef(false)
@@ -523,8 +523,18 @@ export function PoemPlayground({
               {lines.length} 句）
             </p>
           )}
-          {recorder.hint && (
-            <p className="shrink-0 text-center text-[11px] text-destructive">{recorder.hint}</p>
+          {!recorder.isSecure ? (
+            <p className="shrink-0 text-center text-[11px] font-semibold text-destructive">
+              请使用 HTTPS 或 localhost 访问才能录音
+            </p>
+          ) : recorder.error ? (
+            <p className="shrink-0 text-center text-[11px] font-semibold text-destructive">
+              {recorder.error.tip}（{recorder.error.name}）
+            </p>
+          ) : (
+            recorder.hint && (
+              <p className="shrink-0 text-center text-[11px] text-destructive">{recorder.hint}</p>
+            )
           )}
 
           {simpleMode ? (
