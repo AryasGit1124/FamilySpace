@@ -16,6 +16,13 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  experimental: {
+    // 把全局样式直接内联进 HTML。
+    // EdgeOne Pages 构建时会对同一份代码执行两次打包（预渲染 HTML 与运行时各一次），
+    // 两次产出的 CSS chunk 文件名不一致时，HTML 里引用的 xxx.css 在静态资源里不存在（404），
+    // 整个站点会变成无样式的裸 HTML。内联后不再依赖外部 CSS 文件，彻底规避该问题。
+    inlineCss: true,
+  },
   images: {
     unoptimized: true,
   },
