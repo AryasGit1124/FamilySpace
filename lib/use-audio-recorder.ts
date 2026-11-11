@@ -77,6 +77,8 @@ export function useAudioRecorder(options?: {
       case 'SecurityError':
       case 'TypeError':
         return { name, message, tip: '当前环境不允许录音，请用 https 或 localhost 访问' }
+      case 'InvalidStateError':
+        return { name, message, tip: '系统音频会话被占用（例如有声音正在播放），请先停止播放再录音' }
       case 'AbortError':
         return { name, message, tip: '录音启动被中断了，请再点一次' }
       default:
@@ -84,11 +86,60 @@ export function useAudioRecorder(options?: {
     }
   }
 
+  /** Safari 的 AudioSession API：切到「可播放可录音」，避免 playback 类别下无法采集 */
+  type AudioSessionLike = { type: string }
+  const getAudioSession = (): AudioSessionLike | null => {
+    const session = (navigator as Navigator & { audioSession?: AudioSessionLike }).audioSession
+    return session ?? null
+  }
+
+  /**
+   * 录音前的同步准备（必须在用户点击的同步栈内执行，且不能有 await）：
+   * 1. 停掉 TTS 与页面上正在播放的音视频。
+   *    iOS 上有音频在播放时 AVAudioSession 处于 playback 类别，
+   *    此状态下采集麦克风会抛 InvalidStateError: AudioSession category is not compatible with audio capture。
+   * 2. 支持 AudioSession API 的 Safari 显式切换为 play-and-record。
+   */
+  const prepareAudioSession = useCallback(() => {
+    stopSpeak()
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel()
+    }
+    audioRef.current?.pause()
+    if (typeof document !== 'undefined') {
+      document.querySelectorAll('audio, video').forEach((el) => {
+        const media = el as HTMLMediaElement
+        if (!media.paused) media.pause()
+      })
+    }
+    try {
+      const session = getAudioSession()
+      if (session) {
+        console.log('[AudioRecorder] audioSession.type 原值 =', session.type)
+        session.type = 'play-and-record'
+        console.log('[AudioRecorder] audioSession.type 已切换为 play-and-record')
+      }
+    } catch (e) {
+      console.warn('[AudioRecorder] 设置 audioSession 失败:', e)
+    }
+  }, [])
+
+  /** 恢复音频会话为默认类别，避免录音结束后扬声器音量被通话路由压低 */
+  const restoreAudioSession = useCallback(() => {
+    try {
+      const session = getAudioSession()
+      if (session && session.type === 'play-and-record') session.type = 'auto'
+    } catch (e) {
+      console.warn('[AudioRecorder] 恢复 audioSession 失败:', e)
+    }
+  }, [])
+
   /** 停掉麦克风轨道：否则浏览器会一直显示录音中 */
   const releaseMic = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
-  }, [])
+    restoreAudioSession()
+  }, [restoreAudioSession])
 
   /** 清空当前录音并复位 UI 状态（换字 / 换题 / 重录时调用） */
   const reset = useCallback(() => {
@@ -116,15 +167,14 @@ export function useAudioRecorder(options?: {
    * 开始录音。返回是否真正开始录音。
    *
    * Safari 对「用户手势」要求极严：getUserMedia 必须在点击事件的同步调用栈里发起，
-   * 之前若有 await 会被判定为非用户触发而直接拒绝。所以这里把 getUserMedia
-   * 提到函数最前面、在掐断 TTS 之前就同步调用。
+   * 之前若有 await 会被判定为非用户触发而直接拒绝。因此「释放音频会话」与
+   * 「发起 getUserMedia」都必须是同步调用。
    */
   const start = useCallback(async (): Promise<boolean> => {
     if (startingRef.current || recorderRef.current) return false
     setHint('')
     setError(null)
 
-    // ① 先同步发起权限请求（保留用户手势），此时不能有任何 await
     const mediaDevices = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined
     if (!mediaDevices?.getUserMedia) {
       const info = {
@@ -147,6 +197,11 @@ export function useAudioRecorder(options?: {
       return false
     }
 
+    // ① 同步释放音频会话（停 TTS / 暂停播放中的音视频 / 切换 audioSession 类别）
+    //    这些操作都是同步的，不会破坏「用户手势」，但能避免 iOS 的 playback 类别导致采集失败
+    prepareAudioSession()
+
+    // ② 紧接着同步发起权限请求，中间不能有 await
     let request: Promise<MediaStream>
     try {
       request = mediaDevices.getUserMedia({
@@ -158,12 +213,6 @@ export function useAudioRecorder(options?: {
       setError(info)
       alert(`${info.tip}\n\n(${info.name}: ${info.message})`)
       return false
-    }
-
-    // ② 权限请求已发出，再掐断 TTS，避免把机器音录进去
-    stopSpeak()
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel()
     }
 
     startingRef.current = true
@@ -184,10 +233,34 @@ export function useAudioRecorder(options?: {
           err,
         )
         setError(info)
-        // 参数过于严格时回退到默认参数重试一次（部分老旧设备不支持回声消除）
         if (info.name === 'OverconstrainedError' || info.name === 'ConstraintNotSatisfiedError') {
+          // 参数过于严格时回退到默认参数重试一次（部分老旧设备不支持回声消除）
           console.warn('[AudioRecorder] 回退为默认参数 { audio: true } 重试')
-          stream = await mediaDevices.getUserMedia({ audio: true })
+          try {
+            stream = await mediaDevices.getUserMedia({ audio: true })
+          } catch (retryErr) {
+            const retryInfo = describeError(retryErr)
+            console.error('[AudioRecorder] 回退参数后仍失败 | name =', retryInfo.name, '| message =', retryInfo.message)
+            setError(retryInfo)
+            alert(`${retryInfo.tip}\n\n(${retryInfo.name}: ${retryInfo.message})`)
+            return false
+          }
+        } else if (info.name === 'InvalidStateError') {
+          // iOS：音频会话类别尚在切换中，稍等后再试一次
+          console.warn('[AudioRecorder] 音频会话冲突，等待 400ms 后重试')
+          await new Promise((resolve) => setTimeout(resolve, 400))
+          prepareAudioSession()
+          try {
+            stream = await mediaDevices.getUserMedia({
+              audio: { echoCancellation: true, noiseSuppression: true },
+            })
+          } catch (retryErr) {
+            const retryInfo = describeError(retryErr)
+            console.error('[AudioRecorder] 重试仍失败 | name =', retryInfo.name, '| message =', retryInfo.message)
+            setError(retryInfo)
+            alert(`${retryInfo.tip}\n\n(${retryInfo.name}: ${retryInfo.message})`)
+            return false
+          }
         } else {
           alert(`${info.tip}\n\n(${info.name}: ${info.message})`)
           return false
@@ -196,6 +269,9 @@ export function useAudioRecorder(options?: {
 
       streamRef.current = stream
       chunksRef.current = []
+      // 重试成功后清除之前的错误状态，避免 UI 仍显示失败
+      setError(null)
+      setHint('')
 
       let rec: MediaRecorder
       try {
@@ -285,11 +361,12 @@ export function useAudioRecorder(options?: {
       }
       streamRef.current?.getTracks().forEach((t) => t.stop())
       streamRef.current = null
+      restoreAudioSession()
       audioRef.current?.pause()
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current)
       audioUrlRef.current = null
     }
-  }, [])
+  }, [restoreAudioSession])
 
   return { isRecording, audioUrl, hint, error, isSecure, start, stop, toggle, reset, play }
 }
