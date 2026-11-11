@@ -495,40 +495,119 @@ export async function fetchStarLedger(limit = 50): Promise<StarLedgerEntry[]> {
   return (data ?? []) as StarLedgerEntry[]
 }
 
+export type ExchangeRequest = {
+  id: string
+  reward_id: string | null
+  reward_title: string
+  cost_stars: number
+  status: 'pending' | 'approved' | 'rejected'
+  created_at: string
+}
+
 /**
- * 兑换奖励：库存减 1 + 写入一条负数星星记录。
- * 先扣库存再记账，记账失败时把库存补回去，避免孩子白扣星星。
+ * 孩子提交兑换申请：只写入 exchange_requests（status = pending），
+ * 不扣星星、不减库存；等家长确认后再由家长端发放。
  */
-export async function redeemReward(reward: RewardItem) {
+export async function requestExchange(reward: RewardItem) {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { error } = await supabase.from('exchange_requests').insert({
+    reward_id: reward.id,
+    reward_title: reward.title,
+    cost_stars: reward.cost_stars,
+    status: 'pending',
+    ...familyPatch(familyId),
+  })
+  if (error) throw error
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('exchange-requests-changed'))
+  }
+}
+
+/** 待审核的兑换申请：孩子端展示进度用；表未建时降级为空数组 */
+export async function fetchPendingExchangeRequests(): Promise<ExchangeRequest[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data, error } = await scoped(
+    supabase
+      .from('exchange_requests')
+      .select('id, reward_id, reward_title, cost_stars, status, created_at'),
+    familyId,
+  )
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false })
+  if (error) {
+    console.warn('[Store] 读取 exchange_requests 失败（可能还没执行建表 SQL）:', error.message)
+    return []
+  }
+  return (data ?? []) as ExchangeRequest[]
+}
+
+/** 家长同意兑换：校验余额 → 扣星流水 → 库存 -1 → 标记 approved */
+export async function approveExchangeRequest(request: ExchangeRequest): Promise<void> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
 
-  const { data: updated, error: stockError } = await supabase
-    .from('rewards_store')
-    .update({ stock: reward.stock - 1 })
-    .eq('id', reward.id)
-    .eq('stock', reward.stock)
-    .select('id')
-  if (stockError) throw stockError
-  if (!updated || updated.length === 0) throw new Error('库存已变化，请刷新后再试')
+  const balance = await fetchStarTotal()
+  if (balance < request.cost_stars) {
+    throw new Error(`星星余额不足（当前 ${balance} 颗，需要 ${request.cost_stars} 颗）`)
+  }
 
-  const { error: ledgerError } = await supabase
-    .from('star_ledger')
-    .insert({
-      amount: -reward.cost_stars,
-      reason: `兑换: ${reward.title}`,
-      task_name: reward.title,
-      ...familyPatch(familyId),
-    })
+  // 先抢占这条申请（pending → approved），避免连点导致重复扣星
+  const { data: claimed, error: claimError } = await supabase
+    .from('exchange_requests')
+    .update({ status: 'approved' })
+    .eq('id', request.id)
+    .eq('family_id', familyId)
+    .eq('status', 'pending')
+    .select('id')
+  if (claimError) throw claimError
+  if (!claimed || claimed.length === 0) throw new Error('这条申请已被处理，请刷新后再看')
+
+  const { error: ledgerError } = await supabase.from('star_ledger').insert({
+    amount: -request.cost_stars,
+    reason: `兑换: ${request.reward_title}`,
+    task_name: request.reward_title,
+    ...familyPatch(familyId),
+  })
   if (ledgerError) {
-    // 回滚库存，避免记账失败后库存被白白扣掉
-    await supabase.from('rewards_store').update({ stock: reward.stock }).eq('id', reward.id)
+    // 记账失败：把申请退回待审核，避免出现“已同意但没扣星”
+    await supabase.from('exchange_requests').update({ status: 'pending' }).eq('id', request.id)
     throw ledgerError
+  }
+
+  // 库存 -1（奖励可能已被家长删除，删了就不动库存）
+  if (request.reward_id) {
+    const { data: reward } = await supabase
+      .from('rewards_store')
+      .select('stock')
+      .eq('id', request.reward_id)
+      .maybeSingle()
+    if (reward && typeof reward.stock === 'number') {
+      const { error: stockError } = await supabase
+        .from('rewards_store')
+        .update({ stock: Math.max(0, reward.stock - 1) })
+        .eq('id', request.reward_id)
+      if (stockError) console.warn('[Exchange] 库存更新失败:', stockError.message)
+    }
   }
 
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event('stars-changed'))
   }
+}
+
+/** 家长拒绝兑换：只改状态，不扣星星、不动库存 */
+export async function rejectExchangeRequest(requestId: string): Promise<void> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { error } = await supabase
+    .from('exchange_requests')
+    .update({ status: 'rejected' })
+    .eq('id', requestId)
+    .eq('family_id', familyId)
+    .eq('status', 'pending')
+  if (error) throw error
 }
 
 /**

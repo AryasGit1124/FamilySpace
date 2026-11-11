@@ -4,15 +4,16 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { useAuth } from '@/components/auth-provider'
-import { redeemReward, type RewardItem } from '@/lib/supabase-queries'
+import { requestExchange, type ExchangeRequest, type RewardItem } from '@/lib/supabase-queries'
 
 type Props = {
   rewards: RewardItem[]
   starTotal: number
+  pendingRequests: ExchangeRequest[]
 }
 
 /** 星星兑换：仅孩子可见；家长访问自动跳转到「商城配置」 */
-export function StoreClient({ rewards, starTotal }: Props) {
+export function StoreClient({ rewards, starTotal, pendingRequests }: Props) {
   const router = useRouter()
   const { role } = useAuth()
   const [redeemingId, setRedeemingId] = useState<string | null>(null)
@@ -28,20 +29,20 @@ export function StoreClient({ rewards, starTotal }: Props) {
   const handleRedeem = async (reward: RewardItem) => {
     if (redeemingId) return
     const confirmed = window.confirm(
-      `确定要花 ${reward.cost_stars} 颗星星兑换‘${reward.title}’吗？`,
+      `确定要申请兑换‘${reward.title}’（${reward.cost_stars} 颗星星）吗？`,
     )
     if (!confirmed) return
 
     setRedeemingId(reward.id)
     setError('')
     try {
-      await redeemReward(reward)
-      window.alert('兑换成功！快去找爸爸妈妈领取吧！')
-      // Server Component 重新查询星星总数与库存
+      // 只提交申请，不扣星星也不减库存，等家长确认后发放
+      await requestExchange(reward)
+      window.alert('🎁 兑换申请已提交！请找爸爸妈妈点击同意，就能领取奖励啦！')
       router.refresh()
     } catch (err) {
-      console.error('[Store] 兑换失败:', err)
-      setError(`兑换失败：${err instanceof Error ? err.message : String(err)}`)
+      console.error('[Store] 提交兑换申请失败:', err)
+      setError(`提交失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setRedeemingId(null)
     }
@@ -65,6 +66,25 @@ export function StoreClient({ rewards, starTotal }: Props) {
 
       {error && (
         <p className="mx-5 mb-3 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
+      )}
+
+      {pendingRequests.length > 0 && (
+        <section className="mx-5 mb-3 rounded-2xl border border-amber-200 bg-amber-50/80 px-4 py-3">
+          <p className="text-sm font-bold text-amber-700">
+            ⏳ 等待爸爸妈妈确认（{pendingRequests.length}）
+          </p>
+          <ul className="mt-2 space-y-1">
+            {pendingRequests.map((request) => (
+              <li
+                key={request.id}
+                className="flex items-center justify-between gap-3 text-sm text-amber-800"
+              >
+                <span className="min-w-0 truncate">{request.reward_title}</span>
+                <span className="shrink-0 tabular-nums">{request.cost_stars} ⭐</span>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       {rewards.length === 0 ? (
