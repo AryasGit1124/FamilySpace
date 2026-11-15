@@ -634,6 +634,8 @@ export type OdsBillRow = {
   merchant_no: string | null
   remark: string | null
   raw_data: Record<string, string> | null
+  creator_id: string | null
+  creator_name: string | null
   created_at: string
 }
 
@@ -647,6 +649,26 @@ export type OdsBatch = {
 /** 导入时每批写入的行数 */
 const ODS_BILL_BATCH_SIZE = 100
 
+/** 当前登录用户 → 登记人（id + 名字）；取不到名字时用「家庭成员」 */
+async function resolveCreator(): Promise<{ id: string | null; name: string }> {
+  const supabase = await requireSupabase()
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) return { id: null, name: '家庭成员' }
+    const { data } = await supabase
+      .from('profiles')
+      .select('display_name')
+      .eq('id', user.id)
+      .maybeSingle()
+    const name = ((data?.display_name as string | null) ?? '').trim()
+    return { id: user.id, name: name || '家庭成员' }
+  } catch {
+    return { id: null, name: '家庭成员' }
+  }
+}
+
 /** 账单入库：按物理列写入，raw_data 保留整行原始 JSON；每 100 条一批 */
 export async function insertOdsBills(params: {
   source: BillSource
@@ -659,6 +681,7 @@ export async function insertOdsBills(params: {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   if (!familyId) throw new Error('没有找到当前家庭，请重新登录后再导入')
+  const creator = await resolveCreator()
 
   let saved = 0
   for (let start = 0; start < rows.length; start += ODS_BILL_BATCH_SIZE) {
@@ -679,6 +702,8 @@ export async function insertOdsBills(params: {
       merchant_no: row.merchantNo,
       remark: row.remark,
       raw_data: row.rawData,
+      creator_id: creator.id,
+      creator_name: creator.name,
     }))
     const { error } = await supabase.from('bill_ods').insert(batch)
     if (error) throw error
@@ -700,6 +725,7 @@ export async function insertManualBill(params: {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   if (!familyId) throw new Error('没有找到当前家庭，请重新登录后再记账')
+  const creator = await resolveCreator()
 
   const { error } = await supabase.from('bill_ods').insert({
     family_id: familyId,
@@ -711,6 +737,8 @@ export async function insertManualBill(params: {
     amount: params.amount,
     category_id: params.categoryId,
     raw_data: { 来源: '手动记账' },
+    creator_id: creator.id,
+    creator_name: creator.name,
   })
   if (error) throw error
 }
@@ -758,7 +786,7 @@ export async function fetchOdsBills(params?: {
     supabase
       .from('bill_ods')
       .select(
-        'id, source, batch_id, category_id, trade_time, trade_type, counterparty, account, commodity, direction, amount, pay_method, status, trade_no, merchant_no, remark, raw_data, created_at',
+        'id, source, batch_id, category_id, trade_time, trade_type, counterparty, account, commodity, direction, amount, pay_method, status, trade_no, merchant_no, remark, raw_data, creator_id, creator_name, created_at',
       ),
     familyId,
   )
@@ -783,7 +811,9 @@ export async function fetchBillsForStats(): Promise<StatBill[]> {
 
   for (let from = 0; from < 20000; from += pageSize) {
     const { data, error } = await scoped(
-      supabase.from('bill_ods').select('id, trade_time, commodity, amount, direction, category_id'),
+      supabase
+        .from('bill_ods')
+        .select('id, trade_time, commodity, amount, direction, category_id, creator_name'),
       familyId,
     )
       .order('trade_time', { ascending: false, nullsFirst: false })

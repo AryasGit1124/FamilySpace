@@ -31,6 +31,12 @@ create table if not exists public.bill_ods (
 alter table public.bill_ods
   add column if not exists category_id uuid references public.bill_categories (id) on delete set null;
 
+-- 登记人：谁导入 / 谁手动记的账（冗余存名字，profile 查不到也能显示）
+alter table public.bill_ods
+  add column if not exists creator_id uuid references auth.users (id);
+alter table public.bill_ods
+  add column if not exists creator_name text;
+
 -- 明细页按时间倒序、批次页按 batch_id 聚合，都用到索引
 create index if not exists bill_ods_family_time_idx
   on public.bill_ods (family_id, trade_time desc);
@@ -38,6 +44,8 @@ create index if not exists bill_ods_family_batch_idx
   on public.bill_ods (family_id, batch_id);
 create index if not exists bill_ods_family_category_idx
   on public.bill_ods (family_id, category_id);
+create index if not exists bill_ods_family_creator_idx
+  on public.bill_ods (family_id, creator_name);
 
 -- 2. 当前用户所属家庭（未执行过 enable-rls-strict.sql 时兜底创建）
 create or replace function public.current_family_id()

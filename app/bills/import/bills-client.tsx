@@ -7,6 +7,7 @@ import { ManualBillSheet } from '@/app/bills/manual-bill-sheet'
 import {
   bjDateTime,
   buildOdsRows,
+  creatorTagClass,
   describeBillError,
   findRawHeaderRow,
   isMissingBillTable,
@@ -82,9 +83,18 @@ function BillCard({
             {row.commodity || row.trade_type || '（无商品说明）'}
           </p>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">{row.counterparty || '—'}</p>
-          <p className="mt-1 text-xs tabular-nums text-muted-foreground">
-            {row.trade_time ? bjDateTime(row.trade_time) : '—'}
-          </p>
+          <div className="mt-1 flex items-center gap-1.5">
+            <p className="text-xs tabular-nums text-muted-foreground">
+              {row.trade_time ? bjDateTime(row.trade_time) : '—'}
+            </p>
+            {row.creator_name && (
+              <span
+                className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${creatorTagClass(row.creator_name)}`}
+              >
+                {row.creator_name}
+              </span>
+            )}
+          </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
           <span

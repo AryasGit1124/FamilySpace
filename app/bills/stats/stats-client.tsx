@@ -20,6 +20,7 @@ import {
   billDirectionOf,
   bjDateTime,
   categorySubtreeIds,
+  creatorTagClass,
   describeBillError,
   filterBillsByCategory,
   isMissingBillTable,
@@ -65,6 +66,7 @@ export function StatsClient() {
   const [categories, setCategories] = useState<StatCategory[]>([])
   const [granularity, setGranularity] = useState<Granularity>('month')
   const [categoryId, setCategoryId] = useState('')
+  const [creatorFilter, setCreatorFilter] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -108,10 +110,23 @@ export function StatsClient() {
     [categories],
   )
 
+  /** 登记人筛选后（空 = 全部） */
+  const creatorBills = useMemo(
+    () =>
+      creatorFilter ? bills.filter((bill) => (bill.creator_name ?? '') === creatorFilter) : bills,
+    [bills, creatorFilter],
+  )
+
+  const creatorNames = useMemo(() => {
+    const names = new Set<string>()
+    for (const bill of bills) if (bill.creator_name) names.add(bill.creator_name)
+    return [...names].sort()
+  }, [bills])
+
   /** 分类筛选后（选一级分类含全部子分类）的账单 */
   const scopedBills = useMemo(
-    () => filterBillsByCategory(bills, categories, categoryId),
-    [bills, categories, categoryId],
+    () => filterBillsByCategory(creatorBills, categories, categoryId),
+    [creatorBills, categories, categoryId],
   )
 
   /** 时间维度汇总：纵轴收入 / 支出 */
@@ -127,9 +142,9 @@ export function StatsClient() {
 
     const scopeId = selected.parent_id ?? selected.id
     const scopeIds = categorySubtreeIds(categories, scopeId)
-    const source = bills.filter((bill) => !!bill.category_id && scopeIds.has(bill.category_id))
+    const source = creatorBills.filter((bill) => !!bill.category_id && scopeIds.has(bill.category_id))
     return aggregateCategoryShare(source, categories, scopeId)
-  }, [bills, categories, categoryById, categoryId, scopedBills])
+  }, [creatorBills, categories, categoryById, categoryId, scopedBills])
 
   const chartData = useMemo(
     () =>
@@ -254,6 +269,20 @@ export function StatsClient() {
               </optgroup>
             ))}
             {categories.length === 0 && <option disabled>还没建分类</option>}
+          </select>
+
+          <select
+            value={creatorFilter}
+            onChange={(event) => setCreatorFilter(event.target.value)}
+            aria-label="按登记人筛选"
+            className="rounded-full border bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary"
+          >
+            <option value="">全部登记人</option>
+            {creatorNames.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
           </select>
 
           <div className="flex w-full items-center justify-between gap-2 rounded-xl bg-muted/60 px-3 py-2 text-xs sm:ml-auto sm:w-auto sm:bg-transparent sm:px-0 sm:py-0 sm:text-sm">
@@ -409,10 +438,17 @@ export function StatsClient() {
                           {money(Number(bill.amount ?? 0))}
                         </span>
                       </div>
-                      <div className="mt-1.5">
+                      <div className="mt-1.5 flex items-center gap-1.5">
                         <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                           {categoryLabel(bill.category_id)}
                         </span>
+                        {bill.creator_name && (
+                          <span
+                            className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${creatorTagClass(bill.creator_name)}`}
+                          >
+                            {bill.creator_name}
+                          </span>
+                        )}
                       </div>
                     </li>
                   )

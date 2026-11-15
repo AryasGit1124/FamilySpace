@@ -332,6 +332,7 @@ export type StatBill = {
   amount: number | null
   direction: string | null
   category_id: string | null
+  creator_name: string | null
 }
 
 /** 统计用的分类最小字段集 */
@@ -481,6 +482,14 @@ export function aggregateCategoryShare(
   return [...map.values()]
     .map((entry) => ({ ...entry, value: round2(entry.value) }))
     .sort((a, b) => b.value - a.value)
+}
+
+/** 登记人标签配色：爸爸系蓝、妈妈系粉、其他琥珀 */
+export function creatorTagClass(name: string | null | undefined): string {
+  const value = name ?? ''
+  if (/爸|爷|外公|父/.test(value)) return 'bg-blue-50 text-blue-600'
+  if (/妈|奶|外婆|母/.test(value)) return 'bg-pink-50 text-pink-600'
+  return 'bg-amber-50 text-amber-700'
 }
 
 /** ISO 时间 → 北京时间「YYYY-MM-DD HH:mm」 */
