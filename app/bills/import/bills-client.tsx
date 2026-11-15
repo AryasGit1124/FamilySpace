@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CreditCard, Wallet, Wand2, type LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { ManualBillSheet } from '@/app/bills/manual-bill-sheet'
@@ -66,8 +66,8 @@ const SOURCE_LABELS: Record<string, string> = {
   manual: '手动',
 }
 
-/** 账单卡片：手机端优先，商品说明大字 + 对方/时间小字 + 金额 + 分类标签 */
-function BillCard({
+/** 账单行：微信账单式极简列表项 —— 左 Emoji / 中信息 / 右金额，无卡片背景与阴影 */
+function BillRow({
   row,
   categories,
   onAssign,
@@ -80,50 +80,42 @@ function BillCard({
   const isIncome = direction.includes('收')
   const isExpense = direction.includes('支')
   const category = row.category_id ? categories.find((item) => item.id === row.category_id) : undefined
+  const emoji =
+    category?.emoji ??
+    (row.source === 'wechat' ? '💬' : row.source === 'alipay' ? '💙' : '✏️')
 
   return (
-    <li className="w-full rounded-xl border bg-card p-3 shadow-sm">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-base font-semibold leading-snug">
-            {row.commodity || row.trade_type || '（无商品说明）'}
-          </p>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">{row.counterparty || '—'}</p>
-          <div className="mt-1 flex items-center gap-1.5">
-            <p className="text-xs tabular-nums text-muted-foreground">
-              {row.trade_time ? bjDateTime(row.trade_time) : '—'}
-            </p>
-            {row.creator_name && (
-              <span
-                className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${creatorTagClass(row.creator_name)}`}
-              >
-                {row.creator_name}
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-1.5">
-          <span
-            className={
-              isIncome
-                ? 'text-base font-bold tabular-nums text-emerald-600'
-                : isExpense
-                  ? 'text-base font-bold tabular-nums text-red-500'
-                  : 'text-base font-bold tabular-nums text-muted-foreground'
-            }
-          >
-            {isIncome ? '+' : isExpense ? '-' : ''}
-            {money(row.amount)}
+    <li className="flex items-center gap-3 bg-white px-4 py-3">
+      <span
+        className="flex size-10 shrink-0 items-center justify-center rounded-full bg-gray-100 text-lg"
+        aria-hidden="true"
+      >
+        {emoji}
+      </span>
+
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-base leading-snug text-gray-900">
+          {row.commodity || row.counterparty || row.trade_type || '（无商品说明）'}
+        </p>
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-400">
+          <span className="tabular-nums">
+            {row.trade_time ? bjDateTime(row.trade_time) : '—'}
           </span>
-          {category ? (
-            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-              {category.emoji} {category.name}
+          {row.creator_name && (
+            <span
+              className={`rounded px-1 py-0.5 text-[10px] font-medium ${creatorTagClass(row.creator_name)}`}
+            >
+              {row.creator_name}
             </span>
+          )}
+          {category ? (
+            <span className="text-[11px]">{category.name}</span>
           ) : categories.length > 0 ? (
             <select
               value=""
               onChange={(event) => onAssign(row.id, event.target.value)}
-              className="min-h-9 rounded-full border border-dashed border-amber-400 bg-amber-50 px-3 py-1.5 text-[13px] font-medium text-amber-700"
+              aria-label="选择分类"
+              className="appearance-none rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-600 outline-none"
             >
               <option value="">待分类</option>
               {categories.map((item) => (
@@ -133,10 +125,23 @@ function BillCard({
               ))}
             </select>
           ) : (
-            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700">待分类</span>
+            <span className="text-[11px] text-amber-500">待分类</span>
           )}
         </div>
       </div>
+
+      <span
+        className={
+          isIncome
+            ? 'shrink-0 text-lg font-medium tabular-nums text-amber-600'
+            : isExpense
+              ? 'shrink-0 text-lg font-medium tabular-nums text-gray-900'
+              : 'shrink-0 text-lg font-medium tabular-nums text-gray-400'
+        }
+      >
+        {isIncome ? '+' : isExpense ? '-' : ''}
+        {money(row.amount)}
+      </span>
     </li>
   )
 }
@@ -284,6 +289,22 @@ export function BillsClient() {
 
   const busy = phase !== 'idle'
 
+  /** 列表顶部概览：当前列表的月份 + 收支合计 */
+  const summary = useMemo(() => {
+    let income = 0
+    let expense = 0
+    let latest = ''
+    for (const row of rows) {
+      const direction = row.direction ?? ''
+      if (direction.includes('收')) income += Number(row.amount ?? 0)
+      else if (direction.includes('支')) expense += Number(row.amount ?? 0)
+      if (row.trade_time && row.trade_time > latest) latest = row.trade_time
+    }
+    const stamp = latest ? bjDateTime(latest) : ''
+    const month = stamp ? `${stamp.slice(0, 4)}年${Number(stamp.slice(5, 7))}月` : '全部账单'
+    return { income, expense, month }
+  }, [rows])
+
   const handleFile = async (source: BillSource, file: File) => {
     if (busy) return
     setError('')
@@ -368,9 +389,9 @@ export function BillsClient() {
         }
       />
 
-      <div className="mx-auto w-full max-w-full overflow-x-hidden px-4 md:px-6">
+      <div className="mx-auto w-full max-w-full overflow-x-hidden">
         {loadError && (
-          <div className="mb-3 flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
+          <div className="mx-4 mb-2 flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
             <span className="flex-1">{loadError}</span>
             <button
               type="button"
@@ -382,8 +403,8 @@ export function BillsClient() {
           </div>
         )}
 
-        {/* 上传区：紧凑双列白色按钮，给明细留出首屏空间 */}
-        <div className="grid w-full grid-cols-2 gap-3">
+        {/* 工具栏：导入 + 规则，普通小按钮，不再占据首屏 */}
+        <div className="flex w-full flex-wrap items-center gap-2 px-4 pb-2 pt-1">
           {(Object.keys(SOURCE_META) as BillSource[]).map((source) => {
             const meta = SOURCE_META[source]
             const Icon = meta.icon
@@ -397,13 +418,22 @@ export function BillsClient() {
                   pendingSource.current = source
                   inputRef.current?.click()
                 }}
-                className="flex h-12 min-w-0 items-center justify-center gap-2 rounded-xl border bg-white px-3 text-sm font-semibold text-slate-700 transition-colors active:bg-slate-50 disabled:opacity-60"
+                className="flex h-9 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 transition-colors active:bg-gray-50 disabled:opacity-60"
               >
                 <Icon className={`size-4 shrink-0 ${meta.iconClass}`} aria-hidden="true" />
-                <span className="truncate">{meta.label}</span>
+                {meta.label}
               </button>
             )
           })}
+          <button
+            type="button"
+            disabled={busy || cleaning}
+            onClick={() => void runRules()}
+            className="ml-auto flex h-9 items-center gap-1.5 rounded-md bg-sky-50 px-3 text-xs font-semibold text-sky-700 transition-colors active:bg-sky-100 disabled:opacity-60"
+          >
+            <Wand2 className="size-3.5 shrink-0" aria-hidden="true" />
+            {cleaning ? '正在应用规则…' : '一键应用规则'}
+          </button>
         </div>
         <input
           ref={inputRef}
@@ -417,20 +447,10 @@ export function BillsClient() {
           }}
         />
 
-        <button
-          type="button"
-          disabled={busy || cleaning}
-          onClick={() => void runRules()}
-          className="mt-2 flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-sky-50 px-3 text-sm font-semibold text-sky-700 transition-colors active:bg-sky-100 disabled:opacity-60"
-        >
-          <Wand2 className="size-4 shrink-0" aria-hidden="true" />
-          {cleaning ? '正在应用规则…' : '一键应用规则自动分类'}
-        </button>
-
         {(busy || cleaning) && (
-          <div className="mt-3 rounded-2xl border bg-card px-4 py-3">
-            <p className="text-sm font-medium">{message || '正在处理…'}</p>
-            <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+          <div className="mx-4 mb-2 rounded-lg border border-gray-100 bg-white px-3 py-2">
+            <p className="text-xs font-medium">{message || '正在处理…'}</p>
+            <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-gray-100">
               {percent === null ? (
                 <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
               ) : (
@@ -443,11 +463,13 @@ export function BillsClient() {
           </div>
         )}
 
-        {error && <p className="mt-3 rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</p>}
+        {error && (
+          <p className="mx-4 mb-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
+        )}
 
-        {/* 明细卡片流 */}
-        <section className="mt-4">
-          <header className="mb-2 flex items-center gap-2">
+        {/* 明细：微信账单式极简列表 */}
+        <section className="mt-1">
+          <header className="flex items-center gap-2 px-4 pb-2">
             <h2 className="text-base font-bold">账单明细</h2>
             <span className="text-xs text-muted-foreground">
               {selectedBatch ? '本批次' : '最近'} {rows.length} 条
@@ -458,7 +480,7 @@ export function BillsClient() {
           </header>
 
           {batches.length > 0 && (
-            <div className="flex w-full gap-1.5 overflow-x-auto pb-2">
+            <div className="flex w-full gap-1.5 overflow-x-auto px-4 pb-2">
               <button
                 type="button"
                 onClick={() => void changeBatch('')}
@@ -490,6 +512,17 @@ export function BillsClient() {
             </div>
           )}
 
+          {rows.length > 0 && (
+            <div className="sticky top-16 z-20 flex items-center justify-between border-b border-gray-100 bg-gray-50/95 px-4 py-2 text-xs backdrop-blur">
+              <span className="font-semibold text-gray-700">{summary.month}</span>
+              <span className="tabular-nums text-gray-500">
+                支出 <span className="font-semibold text-gray-900">{money(summary.expense)}</span>
+                <span className="mx-1.5 text-gray-300">|</span>
+                收入 <span className="font-semibold text-amber-600">{money(summary.income)}</span>
+              </span>
+            </div>
+          )}
+
           {listLoading ? (
             <p className="py-10 text-center text-sm text-muted-foreground">正在读取账单…</p>
           ) : rows.length === 0 ? (
@@ -499,9 +532,9 @@ export function BillsClient() {
                 : '这个批次里没有数据'}
             </p>
           ) : (
-            <ul className="grid w-full gap-2 md:grid-cols-2">
+            <ul className="divide-y divide-gray-100 border-y border-gray-100 bg-white">
               {rows.map((row) => (
-                <BillCard
+                <BillRow
                   key={row.id}
                   row={row}
                   categories={categories}
@@ -512,13 +545,13 @@ export function BillsClient() {
           )}
 
           {rows.length > 0 && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              按交易时间倒序，最多展示 {PAGE_LIMIT} 条；「待分类」下拉可手动指定分类。
+            <p className="px-4 py-2 text-xs text-muted-foreground">
+              按交易时间倒序，最多展示 {PAGE_LIMIT} 条；「待分类」可手动指定分类。
             </p>
           )}
         </section>
 
-        <p className="mt-4 rounded-xl bg-muted px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+        <p className="mx-4 mt-3 rounded-lg bg-gray-50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
           导入按物理列映射：交易时间、交易类型、对方、商品、收/支、金额、支付方式、状态、单号、备注，
           整行原始数据同时存入 raw_data；每 100 条一批写入 bill_ods。
         </p>

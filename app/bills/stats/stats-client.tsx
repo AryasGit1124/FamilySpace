@@ -410,46 +410,49 @@ export function StatsClient() {
                 没有符合筛选条件的交易
               </p>
             ) : (
-              <ul className="grid w-full gap-2 md:grid-cols-2">
+              <ul className="w-full divide-y divide-gray-100 overflow-hidden rounded-xl border border-gray-100 bg-white">
                 {dayRows.map((bill) => {
                   const direction = billDirectionOf(bill.direction)
+                  const category = bill.category_id ? categoryById.get(bill.category_id) : undefined
                   return (
-                    <li key={bill.id} className="w-full rounded-xl border bg-card p-3 shadow-sm">
-                      <div className="flex items-start gap-3">
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-base font-semibold leading-snug">
-                            {bill.commodity || '—'}
-                          </p>
-                          <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">
+                    <li key={bill.id} className="flex items-center gap-3 px-4 py-3">
+                      <span
+                        className="flex size-10 shrink-0 items-center justify-center rounded-full bg-gray-100 text-lg"
+                        aria-hidden="true"
+                      >
+                        {category?.emoji ?? '💳'}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-base leading-snug text-gray-900">
+                          {bill.commodity || '—'}
+                        </p>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-400">
+                          <span className="tabular-nums">
                             {bill.trade_time ? bjDateTime(bill.trade_time) : '—'}
-                          </p>
-                        </div>
-                        <span
-                          className={cn(
-                            'shrink-0 text-base font-bold tabular-nums',
-                            direction === 'income'
-                              ? 'text-emerald-600'
-                              : direction === 'expense'
-                                ? 'text-red-500'
-                                : 'text-muted-foreground',
-                          )}
-                        >
-                          {direction === 'income' ? '+' : direction === 'expense' ? '-' : ''}
-                          {money(Number(bill.amount ?? 0))}
-                        </span>
-                      </div>
-                      <div className="mt-1.5 flex items-center gap-1.5">
-                        <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                          {categoryLabel(bill.category_id)}
-                        </span>
-                        {bill.creator_name && (
-                          <span
-                            className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${creatorTagClass(bill.creator_name)}`}
-                          >
-                            {bill.creator_name}
                           </span>
-                        )}
+                          <span className="text-[11px]">{categoryLabel(bill.category_id)}</span>
+                          {bill.creator_name && (
+                            <span
+                              className={`rounded px-1 py-0.5 text-[10px] font-medium ${creatorTagClass(bill.creator_name)}`}
+                            >
+                              {bill.creator_name}
+                            </span>
+                          )}
+                        </div>
                       </div>
+                      <span
+                        className={cn(
+                          'shrink-0 text-lg font-medium tabular-nums',
+                          direction === 'income'
+                            ? 'text-amber-600'
+                            : direction === 'expense'
+                              ? 'text-gray-900'
+                              : 'text-gray-400',
+                        )}
+                      >
+                        {direction === 'income' ? '+' : direction === 'expense' ? '-' : ''}
+                        {money(Number(bill.amount ?? 0))}
+                      </span>
                     </li>
                   )
                 })}
