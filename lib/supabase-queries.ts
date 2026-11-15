@@ -809,6 +809,8 @@ export type BillCategory = {
   name: string
   emoji: string
   sort_order: number
+  /** 父级分类（多级分类）；顶层为 null */
+  parent_id: string | null
 }
 
 /** 规则匹配字段：交易对方 / 商品说明 / 全部 */
@@ -826,7 +828,7 @@ export async function fetchBillCategories(): Promise<BillCategory[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const { data, error } = await scoped(
-    supabase.from('bill_categories').select('id, name, emoji, sort_order'),
+    supabase.from('bill_categories').select('id, name, emoji, sort_order, parent_id'),
     familyId,
   )
     .order('sort_order', { ascending: true })
@@ -841,7 +843,7 @@ export async function insertBillCategory(params: { name: string; emoji: string }
   const { data, error } = await supabase
     .from('bill_categories')
     .insert({ name: params.name, emoji: params.emoji, ...familyPatch(familyId) })
-    .select('id, name, emoji, sort_order')
+    .select('id, name, emoji, sort_order, parent_id')
     .single()
   if (error) throw error
   return data as BillCategory
