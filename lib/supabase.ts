@@ -11,13 +11,60 @@ if (!supabaseUrl || !supabaseAnonKey) {
 }
 
 /**
+ * 服务端/浏览器到 Supabase 的连接偶发 ECONNRESET（undici 复用的 keep-alive 连接被对端关闭），
+ * 表现为 `TypeError: fetch failed` + `cause.code = 'ECONNRESET'`，会让整页数据凭空消失。
+ * 这里对幂等请求（GET/HEAD）自动重试，写请求不重试，避免重复插入。
+ */
+const RETRYABLE_CODES = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'EPIPE', 'UND_ERR_SOCKET'])
+const RETRYABLE_METHODS = new Set(['GET', 'HEAD'])
+
+function errorCode(err: unknown): string | null {
+  let current: unknown = err
+  for (let depth = 0; depth < 4 && current; depth += 1) {
+    const code = (current as { code?: unknown }).code
+    if (typeof code === 'string') return code
+    current = (current as { cause?: unknown }).cause
+  }
+  return null
+}
+
+function describeNetError(err: unknown): string {
+  const code = errorCode(err)
+  const message = err instanceof Error ? err.message : String(err)
+  return code ? `${message} (${code})` : message
+}
+
+/** 对 Supabase 的 GET/HEAD 请求自动重试网络层错误 */
+async function retryingFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const attempts = 3
+  const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
+  let lastError: unknown
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      // Request 的 body 只能读一次，重试前克隆一份原始请求
+      const request = input instanceof Request ? input.clone() : input
+      return await fetch(request, init)
+    } catch (err) {
+      lastError = err
+      const retryable = RETRYABLE_METHODS.has(method) && RETRYABLE_CODES.has(errorCode(err) ?? '')
+      if (attempt >= attempts || !retryable) break
+      const wait = 200 * attempt
+      console.warn(`[supabase] ${method} 第 ${attempt} 次请求失败，${wait}ms 后重试：${describeNetError(err)}`)
+      await new Promise((resolve) => setTimeout(resolve, wait))
+    }
+  }
+  throw lastError
+}
+
+/**
  * 浏览器端客户端：会话写入 cookie 而不是 localStorage，
  * 这样服务端渲染（Server Component）能读到同一份登录态，
  * 开启 RLS 后 auth.uid() 在服务端同样生效。
  */
 export const supabase: SupabaseClient | null =
   supabaseUrl && supabaseAnonKey && typeof window !== 'undefined'
-    ? createBrowserClient(supabaseUrl, supabaseAnonKey)
+    ? createBrowserClient(supabaseUrl, supabaseAnonKey, { global: { fetch: retryingFetch } })
     : null
 
 /**
@@ -42,6 +89,7 @@ export async function requireSupabase(): Promise<SupabaseClient> {
   const cookieStore = await cookies()
 
   return createServerClient(supabaseUrl, supabaseAnonKey, {
+    global: { fetch: retryingFetch },
     cookies: {
       getAll() {
         return cookieStore.getAll()

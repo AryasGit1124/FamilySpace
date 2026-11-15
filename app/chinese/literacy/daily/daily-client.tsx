@@ -160,30 +160,93 @@ function poemChars(poem: Poem): string[] {
   return Array.from(set)
 }
 
+/** 4 岁孩子能接受的诗：总字数（去重汉字）不超过 20 字 */
+const MAX_POEM_CHARS = 20
+/** 至少认识 70%，也就是生字率不超过 30% */
+const MAX_UNKNOWN_RATE = 0.3
+/** 所有诗的生字率都超过 70% 时不再硬推，直接跳过古诗环节 */
+const SKIP_UNKNOWN_RATE = 0.7
+/** 兜底时优先选的朗朗上口的启蒙诗 */
+const FALLBACK_POEM_TITLES = ['咏鹅', '静夜思', '春晓', '悯农', '画']
+
+type PoemScore = {
+  poem: Poem
+  /** 去重后的汉字总数（标点不计） */
+  total: number
+  unknown: number
+  rate: number
+}
+
+type PickPoemResult =
+  /** picked：挑到合适的诗；skipped：生字太多主动跳过；empty：诗库为空 */
+  { poem: Poem | null; reason: 'picked' | 'skipped' | 'empty' }
+
+function scorePoem(poem: Poem, known: Set<string>): PoemScore {
+  const chars = poemChars(poem)
+  const unknown = chars.filter((char) => !known.has(char)).length
+  return { poem, total: chars.length, unknown, rate: chars.length === 0 ? 1 : unknown / chars.length }
+}
+
 /**
- * 选本周古诗：优先避开以前挑战过的诗（module = '识字古诗' 的 detail 里记着诗名），
- * 在候选里选与孩子认识的字（去重）交集最多的一首；
- * 交集全为 0 时，退化为字数最少（最简单）的一首兜底。
+ * 选本周古诗（按生字率）：
+ * 1. 只留启蒙级、总字数 ≤ 20 的诗，长诗（如《长恨歌》）直接排除；
+ * 2. 计算生字率 = 不认识的字数 / 总字数，只推荐生字率 ≤ 30% 的诗；
+ * 3. 完全没有合适的诗时，挑生字率最低的一首；连它都超过 70% 就跳过古诗环节。
  */
-function pickPoem(poems: Poem[], known: Set<string>, learnedTitles: Set<string>): Poem | null {
-  if (poems.length === 0) return null
-  // 优先避开以前挑战过的诗；全学过时退回全量，保证仍有诗可读
-  const unlearned = poems.filter((poem) => !learnedTitles.has(poem.title))
-  const pool = unlearned.length > 0 ? unlearned : poems
-  const scored = pool.map((poem) => ({
-    poem,
-    hits: poemChars(poem).filter((char) => known.has(char)).length,
-  }))
-  const max = Math.max(...scored.map((item) => item.hits))
-  if (max > 0) {
-    const top = scored.filter((item) => item.hits === max)
-    return top[Math.floor(Math.random() * top.length)].poem
+function pickPoem(poems: Poem[], known: Set<string>, learnedTitles: Set<string>): PickPoemResult {
+  if (poems.length === 0) return { poem: null, reason: 'empty' }
+
+  // ① 有 level 字段时只取最简单的一级，再按字数卡一道
+  const levels = poems.map((poem) => poem.level).filter((level): level is number => typeof level === 'number')
+  const minLevel = levels.length > 0 ? Math.min(...levels) : null
+  const beginner = poems.filter((poem) => {
+    if (minLevel !== null && typeof poem.level === 'number' && poem.level > minLevel) return false
+    return poemChars(poem).length <= MAX_POEM_CHARS
+  })
+  // 字数限制把所有诗都卡掉时放宽，避免完全无诗可读
+  const shortPoems = poems.filter((poem) => poemChars(poem).length <= MAX_POEM_CHARS)
+  const pool = beginner.length > 0 ? beginner : shortPoems.length > 0 ? shortPoems : poems
+
+  const scored = pool.map((poem) => scorePoem(poem, known))
+  console.log(
+    '[PoemPick] 候选池',
+    scored.map((item) => `${item.poem.title}(${item.total}字/生字率${Math.round(item.rate * 100)}%)`),
+  )
+
+  // ② 优先避开以前学过的诗；全学过时退回全量
+  const unlearned = scored.filter((item) => !learnedTitles.has(item.poem.title))
+  const candidates = unlearned.length > 0 ? unlearned : scored
+
+  const byRate = [...candidates].sort((a, b) => a.rate - b.rate || a.total - b.total)
+  const best = byRate[0]
+
+  // ③ 连最简单的一首都有 70% 以上生字：不硬推，跳过古诗
+  if (best.rate > SKIP_UNKNOWN_RATE) {
+    console.log(
+      `[PoemPick] 跳过古诗：最简单的一首《${best.poem.title}》生字率 ${Math.round(best.rate * 100)}% > ${
+        SKIP_UNKNOWN_RATE * 100
+      }%`,
+    )
+    return { poem: null, reason: 'skipped' }
   }
-  // 全都不认识：选汉字最少（最简单）的一首
-  const totals = pool.map((poem) => ({ poem, total: poemChars(poem).length }))
-  const min = Math.min(...totals.map((item) => item.total))
-  const simplest = totals.filter((item) => item.total === min)
-  return simplest[Math.floor(Math.random() * simplest.length)].poem
+
+  // ④ 优先在生字率达标（≤30%）的诗里挑；没有达标的就退到生字率最低的那首
+  const acceptable = byRate.filter((item) => item.rate <= MAX_UNKNOWN_RATE)
+  const finalists = acceptable.length > 0 ? acceptable : [best]
+  const minRate = finalists[0].rate
+  const sameRate = finalists.filter((item) => item.rate === minRate)
+  const minChars = Math.min(...sameRate.map((item) => item.total))
+  const sameChars = sameRate.filter((item) => item.total === minChars)
+  const preferred = sameChars.filter((item) => FALLBACK_POEM_TITLES.includes(item.poem.title))
+  const pool2 = preferred.length > 0 ? preferred : sameChars
+  const chosen = pool2[Math.floor(Math.random() * pool2.length)]
+
+  console.log(
+    `[PoemPick] 选中《${chosen.poem.title}》 | 总字数 ${chosen.total} | 认识 ${
+      chosen.total - chosen.unknown
+    }/${chosen.total} | 生字率 ${Math.round(chosen.rate * 100)}%`,
+  )
+  return { poem: chosen.poem, reason: 'picked' }
 }
 
 /**
@@ -285,6 +348,8 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
   const [poem, setPoem] = useState<Poem | null>(null)
   /** 在古诗组件里点「听古诗」或「我已跟读完毕」后即可打卡 */
   const [poemCompleted, setPoemCompleted] = useState(false)
+  /** 生字太多、主动跳过古诗环节（跳过时直接允许打卡） */
+  const [poemSkipped, setPoemSkipped] = useState(false)
 
   /** 孩子认识的字：已掌握的 + 今天 Step 2 刚学的（Step 4 高亮以此为准） */
   const knownCharSet = useMemo(
@@ -651,21 +716,27 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
         console.warn('[LiteracyDaily] 读取本周古诗缓存失败:', errMsg(err))
       }
 
-      const picked = pickPoem(poems, knownCharSet, new Set(learnedPoemTitles))
+      const result = pickPoem(poems, knownCharSet, new Set(learnedPoemTitles))
       if (cancelled) return
-      if (!picked) {
+      if (!result.poem) {
         setPoem(null)
+        // 生字率普遍过高：温柔跳过古诗，直接允许打卡
+        if (result.reason === 'skipped') {
+          setPoemSkipped(true)
+          setPoemCompleted(true)
+        }
         return
       }
+      setPoemSkipped(false)
       try {
         window.localStorage.setItem(
           weeklyPoemKey(weekKey),
-          JSON.stringify({ id: picked.id, title: picked.title, date: todayStr() } satisfies WeeklyPoem),
+          JSON.stringify({ id: result.poem.id, title: result.poem.title, date: todayStr() } satisfies WeeklyPoem),
         )
       } catch (err) {
         console.warn('[LiteracyDaily] 写入本周古诗缓存失败:', errMsg(err))
       }
-      setPoem(picked)
+      setPoem(result.poem)
     })()
     return () => {
       cancelled = true
@@ -698,6 +769,7 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
     setFirstTryCorrect(0)
     setPoem(null)
     setPoemCompleted(false)
+    setPoemSkipped(false)
     // 重置结算状态：否则二次进入 Step 4 时 earnedStars 仍非 null，
     // 会导致打卡按钮一直显示「今日已打卡」
     setEarnedStars(null)
@@ -1203,9 +1275,21 @@ export function DailyClient({ taskId, backHref }: { taskId: string | null; backH
                 正在加载古诗…
               </p>
             ) : !poem ? (
-              <p className="flex flex-1 items-center justify-center px-4 text-center text-sm text-muted-foreground">
-                还没有古诗数据，请先执行 scripts/seed-poems.sql 导入诗库
-              </p>
+              poemSkipped ? (
+                <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+                  <span className="text-4xl" aria-hidden="true">
+                    🌱
+                  </span>
+                  <p className="text-base font-bold md:text-lg">宝宝认识的字还不够多</p>
+                  <p className="text-sm text-muted-foreground md:text-base">
+                    今天我们学字卡就好啦，古诗留着下次慢慢读～
+                  </p>
+                </div>
+              ) : (
+                <p className="flex flex-1 items-center justify-center px-4 text-center text-sm text-muted-foreground">
+                  还没有古诗数据，请先执行 scripts/seed-poems.sql 导入诗库
+                </p>
+              )
             ) : (
               <div className="flex min-h-0 w-full flex-1 flex-col">
                 <PoemPlayground

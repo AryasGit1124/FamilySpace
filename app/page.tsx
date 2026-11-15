@@ -32,15 +32,15 @@ export default async function TodayPage() {
   // ----- 1~3. 并行查整周 templates / checkins / schedules（串行会 3 倍往返延迟） -----
   const [allTemplateRows, checkinMapByDate, scheduleRows] = await Promise.all([
     fetchAllWeeklyTemplates().catch((err: unknown) => {
-      console.error('[TodayPage] weekly_templates 查询失败:', err)
+      console.error('[TodayPage] weekly_templates 查询失败:', describeErr(err))
       return [] as WeeklyTemplateRow[]
     }),
     fetchWeekCheckins(weekDates[1], weekDates[7]).catch((err: unknown) => {
-      console.error('[TodayPage] checkins 查询失败:', err)
+      console.error('[TodayPage] checkins 查询失败:', describeErr(err))
       return {} as Record<string, Record<string, boolean>>
     }),
     fetchAllSchedules().catch((err: unknown) => {
-      console.error('[TodayPage] schedules 查询失败:', err)
+      console.error('[TodayPage] schedules 查询失败:', describeErr(err))
       return [] as ScheduleRow[]
     }),
   ])
@@ -148,6 +148,7 @@ async function fetchWeekCheckins(
 ): Promise<Record<string, Record<string, boolean>>> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
+  // 网络层重试统一由 lib/supabase.ts 的 retryingFetch 负责
   const { data, error } = await scoped(
     supabase.from('checkins').select('task_id, checkin_date'),
     familyId,
@@ -156,6 +157,7 @@ async function fetchWeekCheckins(
     .lte('checkin_date', endDate)
 
   if (error) throw error
+
   const map: Record<string, Record<string, boolean>> = {}
   for (const row of data ?? []) {
     if (!row.task_id) continue
@@ -164,6 +166,30 @@ async function fetchWeekCheckins(
     map[dateKey][row.task_id] = true
   }
   return map
+}
+
+/**
+ * PostgrestError / fetch 异常在 Next 的服务端日志里会打印成 `{}`，
+ * 这里转成可读文本，方便定位到底是哪一类失败。
+ */
+function describeErr(err: unknown): string {
+  if (err instanceof Error) {
+    const cause = err.cause ? ` | cause=${String(err.cause)}` : ''
+    return `${err.name}: ${err.message}${cause}`
+  }
+  if (err && typeof err === 'object') {
+    const e = err as { message?: string; code?: string; details?: string; hint?: string }
+    const text = [e.message, e.code ? `code=${e.code}` : '', e.details, e.hint]
+      .filter(Boolean)
+      .join(' | ')
+    if (text) return text
+    try {
+      return JSON.stringify(err)
+    } catch {
+      return String(err)
+    }
+  }
+  return String(err)
 }
 
 /** 查询整周 schedules 并级联 tasks + subjects（不带 day_of_week 过滤） */
