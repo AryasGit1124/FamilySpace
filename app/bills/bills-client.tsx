@@ -129,14 +129,22 @@ export function BillsClient() {
     <div className="flex h-[calc(100dvh-6rem)] flex-col overflow-hidden">
       <PageHeader
         title="家庭账单"
-        subtitle="原始数据先入库，清洗与统计稍后再说"
+        subtitle="导入微信 / 支付宝账单，原始行入库后再配分类规则"
         action={
-          <Link
-            href="/bills/raw"
-            className="shrink-0 rounded-full bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200"
-          >
-            原始数据
-          </Link>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Link
+              href="/bills/settings"
+              className="rounded-full bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200"
+            >
+              分类规则
+            </Link>
+            <Link
+              href="/bills/raw"
+              className="rounded-full bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200"
+            >
+              账单明细
+            </Link>
+          </div>
         }
       />
 

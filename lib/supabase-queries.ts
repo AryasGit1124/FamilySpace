@@ -744,6 +744,111 @@ export async function fetchOdsBills(params?: {
   return (data ?? []) as OdsBillRow[]
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// 账单分类与归类规则
+// ──────────────────────────────────────────────────────────────────────────────
+
+export type BillCategory = {
+  id: string
+  name: string
+  emoji: string
+  sort_order: number
+}
+
+/** 规则匹配字段：交易对方 / 商品说明 / 全部 */
+export type BillRuleField = 'counterparty' | 'commodity' | 'all'
+
+export type BillCategoryRule = {
+  id: string
+  category_id: string
+  keyword: string
+  match_field: BillRuleField
+  priority: number
+}
+
+export async function fetchBillCategories(): Promise<BillCategory[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data, error } = await scoped(
+    supabase.from('bill_categories').select('id, name, emoji, sort_order'),
+    familyId,
+  )
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return (data ?? []) as BillCategory[]
+}
+
+export async function insertBillCategory(params: { name: string; emoji: string }) {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data, error } = await supabase
+    .from('bill_categories')
+    .insert({ name: params.name, emoji: params.emoji, ...familyPatch(familyId) })
+    .select('id, name, emoji, sort_order')
+    .single()
+  if (error) throw error
+  return data as BillCategory
+}
+
+export async function updateBillCategory(id: string, params: { name: string; emoji: string }) {
+  const supabase = await requireSupabase()
+  const { error } = await supabase
+    .from('bill_categories')
+    .update({ name: params.name, emoji: params.emoji })
+    .eq('id', id)
+  if (error) throw error
+}
+
+/** 删除分类，其下的规则由外键 on delete cascade 一并删除 */
+export async function deleteBillCategory(id: string) {
+  const supabase = await requireSupabase()
+  const { error } = await supabase.from('bill_categories').delete().eq('id', id)
+  if (error) throw error
+}
+
+export async function fetchBillRules(): Promise<BillCategoryRule[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data, error } = await scoped(
+    supabase.from('bill_category_rules').select('id, category_id, keyword, match_field, priority'),
+    familyId,
+  )
+    .order('priority', { ascending: false })
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return (data ?? []) as BillCategoryRule[]
+}
+
+export async function insertBillRule(params: {
+  categoryId: string
+  keyword: string
+  matchField: BillRuleField
+  priority: number
+}) {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data, error } = await supabase
+    .from('bill_category_rules')
+    .insert({
+      category_id: params.categoryId,
+      keyword: params.keyword,
+      match_field: params.matchField,
+      priority: params.priority,
+      ...familyPatch(familyId),
+    })
+    .select('id, category_id, keyword, match_field, priority')
+    .single()
+  if (error) throw error
+  return data as BillCategoryRule
+}
+
+export async function deleteBillRule(id: string) {
+  const supabase = await requireSupabase()
+  const { error } = await supabase.from('bill_category_rules').delete().eq('id', id)
+  if (error) throw error
+}
+
 /**
  * 游戏通关后打卡：写入 checkins（status = pending，待家长审核），不直接发星星。
  * stars 为家长确认后应发放的星星数（默认 1 颗），Boss 关等场景可通过 stars 传 3。
