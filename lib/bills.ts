@@ -317,6 +317,172 @@ export function pickBillCategory(
   return null
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// 统计聚合（纯函数，页面只负责渲染）
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** 时间维度：按日 / 按月 / 按年 */
+export type Granularity = 'day' | 'month' | 'year'
+
+/** 统计用的账单最小字段集 */
+export type StatBill = {
+  id: string
+  trade_time: string | null
+  commodity: string | null
+  amount: number | null
+  direction: string | null
+  category_id: string | null
+}
+
+/** 统计用的分类最小字段集 */
+export type StatCategory = {
+  id: string
+  name: string
+  emoji: string
+  parent_id: string | null
+}
+
+/** 收/支文案 → income / expense；「不计收支」等返回 null */
+export function billDirectionOf(
+  direction: string | null | undefined,
+): 'income' | 'expense' | null {
+  const value = (direction ?? '').trim()
+  if (value.includes('收')) return 'income'
+  if (value.includes('支')) return 'expense'
+  return null
+}
+
+/** 北京时间（+08:00）的日期键，不依赖浏览器时区 */
+function bjDateParts(iso: string): { year: string; month: string; day: string } | null {
+  const time = Date.parse(iso)
+  if (Number.isNaN(time)) return null
+  const d = new Date(time + 8 * 60 * 60 * 1000)
+  return {
+    year: String(d.getUTCFullYear()),
+    month: pad2(d.getUTCMonth() + 1),
+    day: pad2(d.getUTCDate()),
+  }
+}
+
+/** 账单 → 时间桶键：日 YYYY-MM-DD / 月 YYYY-MM / 年 YYYY */
+export function bucketKeyOf(
+  tradeTime: string | null,
+  granularity: Granularity,
+): string | null {
+  if (!tradeTime) return null
+  const parts = bjDateParts(tradeTime)
+  if (!parts) return null
+  if (granularity === 'day') return `${parts.year}-${parts.month}-${parts.day}`
+  if (granularity === 'month') return `${parts.year}-${parts.month}`
+  return parts.year
+}
+
+/** 某分类及其所有子孙分类的 id（多级分类聚合） */
+export function categorySubtreeIds(
+  categories: StatCategory[],
+  rootId: string,
+): Set<string> {
+  const ids = new Set<string>([rootId])
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const category of categories) {
+      if (category.parent_id && ids.has(category.parent_id) && !ids.has(category.id)) {
+        ids.add(category.id)
+        changed = true
+      }
+    }
+  }
+  return ids
+}
+
+/** 按分类筛选：选一级分类时自动包含其所有二级分类 */
+export function filterBillsByCategory<T extends { category_id: string | null }>(
+  bills: T[],
+  categories: StatCategory[],
+  categoryId: string,
+): T[] {
+  if (!categoryId) return bills
+  const ids = categorySubtreeIds(categories, categoryId)
+  return bills.filter((bill) => !!bill.category_id && ids.has(bill.category_id))
+}
+
+const round2 = (value: number) => Math.round(value * 100) / 100
+
+export type TimeBucket = { key: string; income: number; expense: number; net: number }
+
+/** 按时间维度汇总收入 / 支出 / 结余，按时间升序 */
+export function aggregateTimeBuckets(
+  bills: StatBill[],
+  granularity: Granularity,
+): TimeBucket[] {
+  const map = new Map<string, TimeBucket>()
+  for (const bill of bills) {
+    const key = bucketKeyOf(bill.trade_time, granularity)
+    if (!key) continue
+    const direction = billDirectionOf(bill.direction)
+    if (!direction) continue
+    const amount = Number(bill.amount ?? 0)
+    if (!Number.isFinite(amount) || amount <= 0) continue
+
+    const bucket = map.get(key) ?? { key, income: 0, expense: 0, net: 0 }
+    if (direction === 'income') bucket.income += amount
+    else bucket.expense += amount
+    map.set(key, bucket)
+  }
+  return [...map.values()]
+    .sort((a, b) => a.key.localeCompare(b.key))
+    .map((bucket) => ({
+      key: bucket.key,
+      income: round2(bucket.income),
+      expense: round2(bucket.expense),
+      net: round2(bucket.income - bucket.expense),
+    }))
+}
+
+export type CategoryShare = { name: string; emoji: string; value: number }
+
+/**
+ * 支出按「二级分类」占比；直接挂在一级分类上的账单记为「一级（未细分）」。
+ * scopeId 为当前选中的分类，用于给「直接挂在该分类上」的账单加标记。
+ */
+export function aggregateCategoryShare(
+  bills: StatBill[],
+  categories: StatCategory[],
+  scopeId?: string,
+): CategoryShare[] {
+  const byId = new Map(categories.map((category) => [category.id, category]))
+  const map = new Map<string, CategoryShare>()
+
+  for (const bill of bills) {
+    if (billDirectionOf(bill.direction) !== 'expense') continue
+    const amount = Number(bill.amount ?? 0)
+    if (!Number.isFinite(amount) || amount <= 0) continue
+
+    const category = bill.category_id ? byId.get(bill.category_id) : undefined
+    let name = '未分类'
+    let emoji = '❓'
+    if (category) {
+      const parent = category.parent_id ? byId.get(category.parent_id) : undefined
+      if (parent) {
+        name = category.name
+        emoji = category.emoji
+      } else {
+        name = scopeId && category.id === scopeId ? `${category.name}（未细分）` : category.name
+        emoji = category.emoji
+      }
+    }
+
+    const entry = map.get(name) ?? { name, emoji, value: 0 }
+    entry.value += amount
+    map.set(name, entry)
+  }
+
+  return [...map.values()]
+    .map((entry) => ({ ...entry, value: round2(entry.value) }))
+    .sort((a, b) => b.value - a.value)
+}
+
 /** ISO 时间 → 北京时间「YYYY-MM-DD HH:mm」 */
 export function bjDateTime(iso: string): string {
   const time = Date.parse(iso)

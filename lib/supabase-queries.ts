@@ -4,7 +4,7 @@ import { isoDayOfWeek, shiftDate, streakEndingAt, todayStr } from '@/lib/dates'
 import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
 import { baseStarsForCheckin, STREAK_BONUS_STARS } from '@/lib/star-rules'
-import { type BillSource, type OdsBill } from '@/lib/bills'
+import { type BillSource, type OdsBill, type StatBill } from '@/lib/bills'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -743,6 +743,28 @@ export async function fetchOdsBills(params?: {
 
   if (error) throw error
   return (data ?? []) as OdsBillRow[]
+}
+
+/** 统计页：只取聚合需要的列，分页取全量（最多 2 万条） */
+export async function fetchBillsForStats(): Promise<StatBill[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const pageSize = 1000
+  const rows: StatBill[] = []
+
+  for (let from = 0; from < 20000; from += pageSize) {
+    const { data, error } = await scoped(
+      supabase.from('bill_ods').select('id, trade_time, commodity, amount, direction, category_id'),
+      familyId,
+    )
+      .order('trade_time', { ascending: false, nullsFirst: false })
+      .range(from, from + pageSize - 1)
+
+    if (error) throw error
+    rows.push(...((data ?? []) as StatBill[]))
+    if (!data || data.length < pageSize) break
+  }
+  return rows
 }
 
 /** 未分类账单（只取匹配需要的列）：分页取全量，避免默认 1000 行上限 */
