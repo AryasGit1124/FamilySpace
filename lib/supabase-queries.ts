@@ -4,6 +4,7 @@ import { isoDayOfWeek, shiftDate, streakEndingAt, todayStr } from '@/lib/dates'
 import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
 import { baseStarsForCheckin, STREAK_BONUS_STARS } from '@/lib/star-rules'
+import { inMonth, type BillDirection, type BillSource, type ParsedBill } from '@/lib/bills'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -608,6 +609,102 @@ export async function rejectExchangeRequest(requestId: string): Promise<void> {
     .eq('family_id', familyId)
     .eq('status', 'pending')
   if (error) throw error
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 家庭账单
+// ──────────────────────────────────────────────────────────────────────────────
+
+export type BillRow = {
+  id: string
+  occurred_at: string
+  source: BillSource
+  direction: BillDirection
+  amount: number
+  category: string | null
+  description: string | null
+}
+
+export type BillStats = {
+  /** 统计月份，YYYY-MM */
+  month: string
+  monthIncome: number
+  monthExpense: number
+  totalCount: number
+  recent: BillRow[]
+}
+
+/** 批量写入账单：每批 500 条，避免单次请求体过大 */
+export async function insertBills(
+  rows: ParsedBill[],
+  onProgress?: (saved: number, total: number) => void,
+): Promise<number> {
+  if (rows.length === 0) return 0
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  if (!familyId) throw new Error('没有找到当前家庭，请重新登录后再导入')
+
+  const BATCH_SIZE = 500
+  let saved = 0
+  for (let start = 0; start < rows.length; start += BATCH_SIZE) {
+    const batch = rows.slice(start, start + BATCH_SIZE).map((row) => ({
+      occurred_at: row.occurredAt,
+      source: row.source,
+      direction: row.direction,
+      amount: row.amount,
+      category: row.category || null,
+      description: row.description || null,
+      family_id: familyId,
+    }))
+    const { error } = await supabase.from('family_bills').insert(batch)
+    if (error) throw error
+    saved += batch.length
+    onProgress?.(saved, rows.length)
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('bills-changed'))
+  }
+  return saved
+}
+
+/** 账单汇总：本月收入 / 支出 + 最近 10 条 */
+export async function fetchBillStats(): Promise<BillStats> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const month = todayStr().slice(0, 7)
+
+  const { data, error } = await scoped(
+    supabase
+      .from('family_bills')
+      .select('id, occurred_at, source, direction, amount, category, description'),
+    familyId,
+  )
+    .order('occurred_at', { ascending: false })
+    .limit(5000)
+
+  if (error) {
+    console.warn('[Bills] 读取 family_bills 失败（可能还没执行建表 SQL）:', error.message)
+    return { month, monthIncome: 0, monthExpense: 0, totalCount: 0, recent: [] }
+  }
+
+  const rows = (data ?? []) as BillRow[]
+  let monthIncome = 0
+  let monthExpense = 0
+  for (const row of rows) {
+    if (!inMonth(row.occurred_at, month)) continue
+    const amount = Number(row.amount) || 0
+    if (row.direction === 'income') monthIncome += amount
+    else monthExpense += amount
+  }
+
+  return {
+    month,
+    monthIncome,
+    monthExpense,
+    totalCount: rows.length,
+    recent: rows.slice(0, 10),
+  }
 }
 
 /**

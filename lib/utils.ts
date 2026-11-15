@@ -10,7 +10,7 @@ export function cn(...inputs: ClassValue[]) {
  * 家长管理页不显示底部 Tab；孩子学习 / 娱乐页（/、/chinese、/math、/english、
  * /logic、/adventure、/store 及其子路由）以及其他页面正常显示。
  */
-const HIDE_BOTTOM_TAB_PREFIXES = ['/upload', '/library', '/stats', '/parent', '/settings', '/growth']
+const HIDE_BOTTOM_TAB_PREFIXES = ['/upload', '/library', '/stats', '/bills', '/parent', '/settings', '/growth']
 
 export function shouldHideBottomTab(pathname: string): boolean {
   if (pathname === '/login') return true

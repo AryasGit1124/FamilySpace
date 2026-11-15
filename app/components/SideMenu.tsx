@@ -14,6 +14,7 @@ import {
   Settings,
   UploadCloud,
   Users,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '@/components/auth-provider'
@@ -28,6 +29,7 @@ const MENU_ITEMS: MenuItem[] = [
   { href: '/parent/approvals', label: '打卡审核', icon: ClipboardCheck },
   { href: '/growth', label: '成长档案', icon: Camera },
   { href: '/stats', label: '学习统计', icon: BarChart3 },
+  { href: '/bills', label: '家庭账单', icon: Wallet },
   { href: '/upload', label: '上传资料', icon: UploadCloud },
   { href: '/library', label: '资料库', icon: Library },
   { href: '/settings', label: '设置', icon: Settings },
