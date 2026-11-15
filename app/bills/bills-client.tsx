@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { PageHeader } from '@/components/page-header'
 import {
   bjDateTime,
@@ -14,7 +14,7 @@ import {
   readBillSheet,
   type BillSource,
 } from '@/lib/bills'
-import { insertRawBills, type RawBatch } from '@/lib/supabase-queries'
+import { fetchRawBatches, insertRawBills, type RawBatch } from '@/lib/supabase-queries'
 
 type Phase = 'idle' | 'parsing' | 'saving'
 
@@ -36,21 +36,41 @@ const SOURCE_META: Record<BillSource, { label: string; hint: string; className: 
 /**
  * 家庭账单：把微信 / 支付宝导出文件原封不动搬进 bill_raw_data（ODS 原始层）。
  * 这里只做「解析 → 组装 JSON → 分批入库」，不做金额清洗与统计。
+ * 批次列表在浏览器端读取：线上服务端访问 Supabase 偶发 ECONNRESET。
  */
-export function BillsClient({
-  batches,
-  loadError,
-}: {
-  batches: RawBatch[]
-  loadError?: string | null
-}) {
+export function BillsClient() {
   const router = useRouter()
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState('')
   const [percent, setPercent] = useState<number | null>(null)
   const [error, setError] = useState('')
+  const [batches, setBatches] = useState<RawBatch[]>([])
+  const [listLoading, setListLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
   const pendingSource = useRef<BillSource>('wechat')
+
+  const loadBatches = useCallback(async () => {
+    setListLoading(true)
+    setLoadError('')
+    try {
+      setBatches(await fetchRawBatches())
+    } catch (err) {
+      const detail = describeBillError(err)
+      console.error('[Bills] 读取导入批次失败:', detail, err)
+      setLoadError(
+        isMissingBillTable(err)
+          ? '原始账单表还没创建：请在 Supabase 执行 scripts/create-bill-raw-data.sql，然后刷新本页'
+          : `读取导入批次失败：${detail}`,
+      )
+    } finally {
+      setListLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadBatches()
+  }, [loadBatches])
 
   const busy = phase !== 'idle'
 
@@ -124,9 +144,16 @@ export function BillsClient({
         {/* 左栏：导入入口 + 进度 */}
         <div className="flex shrink-0 flex-col gap-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
           {loadError && (
-            <p className="rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
-              {loadError}
-            </p>
+            <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
+              <span className="flex-1">{loadError}</span>
+              <button
+                type="button"
+                onClick={() => void loadBatches()}
+                className="shrink-0 rounded-full bg-amber-200 px-2.5 py-0.5 text-xs font-bold text-amber-900"
+              >
+                重试
+              </button>
+            </div>
           )}
 
           <div className="grid grid-cols-2 gap-2">
@@ -195,7 +222,11 @@ export function BillsClient({
             </Link>
           </header>
 
-          {batches.length === 0 ? (
+          {listLoading ? (
+            <p className="flex-1 px-4 py-10 text-center text-sm text-muted-foreground">
+              正在读取导入批次…
+            </p>
+          ) : batches.length === 0 ? (
             <p className="flex-1 px-4 py-10 text-center text-sm text-muted-foreground">
               还没有导入记录，点上面的按钮选择账单文件吧
             </p>
