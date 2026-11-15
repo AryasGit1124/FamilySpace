@@ -22,4 +22,13 @@ create index if not exists family_bills_family_time_idx
 alter table public.family_bills disable row level security;
 grant all on public.family_bills to anon, authenticated;
 
+-- ────────────────────────────────────────────────────────────
+-- 升级（已建表的老库直接执行下面几行即可，可重复执行）
+-- 保存原始流水字段，便于以后按单号对账、展示支付方式
+-- ────────────────────────────────────────────────────────────
+alter table public.family_bills add column if not exists raw_data jsonb;
+alter table public.family_bills add column if not exists trade_no text;
+alter table public.family_bills add column if not exists merchant_no text;
+alter table public.family_bills add column if not exists pay_method text;
+
 notify pgrst, 'reload schema';
