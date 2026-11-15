@@ -7,7 +7,9 @@ import {
   bjDateTime,
   bjDayKey,
   categoryOf,
+  describeBillError,
   expenseByCategory,
+  isMissingBillTable,
   parseBillFile,
   sumBills,
   type BillSource,
@@ -52,7 +54,13 @@ function dayLabel(occurredAt: string): string {
  * 家庭账单：导入微信 / 支付宝 CSV，按月 / 年看收支概况、支出分类 Top 5 与明细。
  * 手机端单列，左栏（导入 + 看板 + 分类）自带内部滚动；iPad/桌面左右分栏，明细列表内部独立滚动。
  */
-export function BillsClient({ bills }: { bills: BillRow[] }) {
+export function BillsClient({
+  bills,
+  loadError,
+}: {
+  bills: BillRow[]
+  loadError?: string | null
+}) {
   const router = useRouter()
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState('')
@@ -109,6 +117,7 @@ export function BillsClient({ bills }: { bills: BillRow[] }) {
     setPhase('parsing')
     setPercent(null)
     setMessage('正在解析文件…')
+    let savedSoFar = 0
     try {
       const result = await parseBillFile(file, source)
       if (result.rows.length === 0) {
@@ -128,6 +137,7 @@ export function BillsClient({ bills }: { bills: BillRow[] }) {
       let saved = 0
       await insertBills(result.rows, (done) => {
         saved = done
+        savedSoFar = done
         const ratio = Math.round((done / result.rows.length) * 100)
         setPercent(ratio)
         setMessage(`已解析 ${result.rows.length} 条，已保存 ${saved} 条（${ratio}%）…`)
@@ -143,9 +153,17 @@ export function BillsClient({ bills }: { bills: BillRow[] }) {
       )
       router.refresh()
     } catch (err) {
-      console.error('[Bills] 导入失败:', err)
-      setError(`导入失败：${err instanceof Error ? err.message : String(err)}`)
+      const detail = describeBillError(err)
+      // Supabase 的 PostgrestError 在浏览器控制台会显示成 {}，这里额外打印可读文本
+      console.error('[Bills] 导入失败:', detail, err)
       setMessage('')
+      if (isMissingBillTable(err)) {
+        setError('账单数据表还没创建：请在 Supabase 执行 scripts/create-family-bills.sql，然后重试')
+      } else {
+        setError(
+          `${savedSoFar > 0 ? `已保存 ${savedSoFar} 条，之后` : ''}导入失败：${detail}`,
+        )
+      }
     } finally {
       setPhase('idle')
     }
@@ -185,6 +203,12 @@ export function BillsClient({ bills }: { bills: BillRow[] }) {
       <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-3 px-4 pb-4 md:px-6 lg:grid lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-stretch lg:gap-5">
         {/* 左栏：导入 + 数据看板 + 分类统计（手机端自带内部滚动，桌面端占据左半屏） */}
         <div className="flex max-h-[52dvh] shrink-0 flex-col gap-3 overflow-y-auto pb-0.5 lg:max-h-none lg:min-h-0 lg:flex-1">
+          {loadError && (
+            <p className="rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
+              {loadError}
+            </p>
+          )}
+
           <div className="grid grid-cols-2 gap-2">
             {(Object.keys(SOURCE_META) as BillSource[]).map((source) => {
               const meta = SOURCE_META[source]

@@ -301,6 +301,37 @@ export function categoryOf(row: Pick<BillRecord, 'category'>): string {
   return row.category?.trim() || '未分类'
 }
 
+/**
+ * 把 Supabase / PostgREST 的错误转成可读文本。
+ * 这类错误在 Next 控制台里会打印成 `{}`，必须自己取 message / details / hint / code。
+ */
+export function describeBillError(err: unknown): string {
+  if (err === null || err === undefined) return '未知错误'
+  if (typeof err === 'string') return err
+
+  const obj = err as Record<string, unknown>
+  const field = (key: string) => {
+    const value = obj[key]
+    return typeof value === 'string' && value.trim() ? value.trim() : ''
+  }
+  const message = err instanceof Error ? err.message : field('message')
+  const code = field('code')
+  const parts = [message, field('details'), field('hint')].filter(Boolean)
+  const text = parts.join(' | ') || `未知错误（${String(err)}）`
+  return code && !text.includes(code) ? `${text}（${code}）` : text
+}
+
+/** 账单表还没建 / PostgREST 还没刷新 schema：提示用户去执行建表 SQL */
+export function isMissingBillTable(err: unknown): boolean {
+  const text = describeBillError(err).toLowerCase()
+  return (
+    text.includes('schema cache') ||
+    text.includes('does not exist') ||
+    text.includes('42p01') ||
+    text.includes('pgrst205')
+  )
+}
+
 /** 区间（prefix 为 YYYY-MM 或 YYYY）内的收入 / 支出合计 */
 export function sumBills(rows: readonly BillRecord[], prefix: string) {
   let income = 0

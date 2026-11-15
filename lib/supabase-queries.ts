@@ -662,6 +662,7 @@ export async function insertBills(
 /**
  * 读取账单明细（默认最近 5000 条，按时间倒序）。
  * 月/年汇总、分类统计与筛选都放在页面前端计算，切换即时响应。
+ * 读取失败直接抛错，由页面提示「表还没建」等具体原因。
  */
 export async function fetchBills(limit = 5000): Promise<BillRow[]> {
   const supabase = await requireSupabase()
@@ -675,10 +676,7 @@ export async function fetchBills(limit = 5000): Promise<BillRow[]> {
     .order('occurred_at', { ascending: false })
     .limit(limit)
 
-  if (error) {
-    console.warn('[Bills] 读取 family_bills 失败（可能还没执行建表 SQL）:', error.message)
-    return []
-  }
+  if (error) throw error
   return (data ?? []) as BillRow[]
 }
 
