@@ -150,3 +150,46 @@ export function parseBillCsv(text: string, source: BillSource): ParseResult {
 export function inMonth(occurredAt: string, yearMonth: string): boolean {
   return occurredAt.slice(0, 7) === yearMonth
 }
+
+/** 汇总用的最小行结构：数据库行与解析结果都能直接传入 */
+export type BillRecord = {
+  occurred_at: string
+  direction: BillDirection
+  amount: number | string
+  category: string | null
+}
+
+/** 分类名兜底：空分类统一归入「未分类」 */
+export function categoryOf(row: Pick<BillRecord, 'category'>): string {
+  return row.category?.trim() || '未分类'
+}
+
+/** 区间（prefix 为 YYYY-MM 或 YYYY）内的收入 / 支出合计 */
+export function sumBills(rows: readonly BillRecord[], prefix: string) {
+  let income = 0
+  let expense = 0
+  for (const row of rows) {
+    if (row.occurred_at.slice(0, prefix.length) !== prefix) continue
+    const amount = Number(row.amount) || 0
+    if (row.direction === 'income') income += amount
+    else if (row.direction === 'expense') expense += amount
+  }
+  return { income, expense }
+}
+
+/** 区间内支出按分类聚合，按金额降序；percent 为占该区间总支出的比例 */
+export function expenseByCategory(rows: readonly BillRecord[], prefix: string) {
+  const map = new Map<string, number>()
+  let total = 0
+  for (const row of rows) {
+    if (row.occurred_at.slice(0, prefix.length) !== prefix) continue
+    if (row.direction !== 'expense') continue
+    const amount = Number(row.amount) || 0
+    const key = categoryOf(row)
+    map.set(key, (map.get(key) ?? 0) + amount)
+    total += amount
+  }
+  return [...map.entries()]
+    .map(([name, amount]) => ({ name, amount, percent: total > 0 ? (amount / total) * 100 : 0 }))
+    .sort((a, b) => b.amount - a.amount)
+}

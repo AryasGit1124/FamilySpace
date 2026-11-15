@@ -4,7 +4,7 @@ import { isoDayOfWeek, shiftDate, streakEndingAt, todayStr } from '@/lib/dates'
 import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
 import { baseStarsForCheckin, STREAK_BONUS_STARS } from '@/lib/star-rules'
-import { inMonth, type BillDirection, type BillSource, type ParsedBill } from '@/lib/bills'
+import { type BillDirection, type BillSource, type ParsedBill } from '@/lib/bills'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -625,15 +625,6 @@ export type BillRow = {
   description: string | null
 }
 
-export type BillStats = {
-  /** 统计月份，YYYY-MM */
-  month: string
-  monthIncome: number
-  monthExpense: number
-  totalCount: number
-  recent: BillRow[]
-}
-
 /** 批量写入账单：每批 500 条，避免单次请求体过大 */
 export async function insertBills(
   rows: ParsedBill[],
@@ -668,12 +659,13 @@ export async function insertBills(
   return saved
 }
 
-/** 账单汇总：本月收入 / 支出 + 最近 10 条 */
-export async function fetchBillStats(): Promise<BillStats> {
+/**
+ * 读取账单明细（默认最近 5000 条，按时间倒序）。
+ * 月/年汇总、分类统计与筛选都放在页面前端计算，切换即时响应。
+ */
+export async function fetchBills(limit = 5000): Promise<BillRow[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
-  const month = todayStr().slice(0, 7)
-
   const { data, error } = await scoped(
     supabase
       .from('family_bills')
@@ -681,30 +673,13 @@ export async function fetchBillStats(): Promise<BillStats> {
     familyId,
   )
     .order('occurred_at', { ascending: false })
-    .limit(5000)
+    .limit(limit)
 
   if (error) {
     console.warn('[Bills] 读取 family_bills 失败（可能还没执行建表 SQL）:', error.message)
-    return { month, monthIncome: 0, monthExpense: 0, totalCount: 0, recent: [] }
+    return []
   }
-
-  const rows = (data ?? []) as BillRow[]
-  let monthIncome = 0
-  let monthExpense = 0
-  for (const row of rows) {
-    if (!inMonth(row.occurred_at, month)) continue
-    const amount = Number(row.amount) || 0
-    if (row.direction === 'income') monthIncome += amount
-    else monthExpense += amount
-  }
-
-  return {
-    month,
-    monthIncome,
-    monthExpense,
-    totalCount: rows.length,
-    recent: rows.slice(0, 10),
-  }
+  return (data ?? []) as BillRow[]
 }
 
 /**
