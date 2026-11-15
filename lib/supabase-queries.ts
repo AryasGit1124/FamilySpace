@@ -813,7 +813,7 @@ export async function fetchBillsForStats(): Promise<StatBill[]> {
     const { data, error } = await scoped(
       supabase
         .from('bill_ods')
-        .select('id, trade_time, commodity, amount, direction, category_id, creator_name'),
+        .select('id, source, trade_time, commodity, amount, direction, category_id, creator_name'),
       familyId,
     )
       .order('trade_time', { ascending: false, nullsFirst: false })

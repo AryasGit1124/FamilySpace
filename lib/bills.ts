@@ -333,6 +333,7 @@ export type StatBill = {
   direction: string | null
   category_id: string | null
   creator_name: string | null
+  source: string | null
 }
 
 /** 统计用的分类最小字段集 */
@@ -484,12 +485,22 @@ export function aggregateCategoryShare(
     .sort((a, b) => b.value - a.value)
 }
 
-/** 登记人标签配色：爸爸系蓝、妈妈系粉、其他琥珀 */
+/** 登记人标签配色：爸爸系青、妈妈系粉、其他琥珀 */
 export function creatorTagClass(name: string | null | undefined): string {
   const value = name ?? ''
-  if (/爸|爷|外公|父/.test(value)) return 'bg-blue-50 text-blue-600'
+  if (/爸|爷|外公|父/.test(value)) return 'bg-cyan-50 text-cyan-700'
   if (/妈|奶|外婆|母/.test(value)) return 'bg-pink-50 text-pink-600'
   return 'bg-amber-50 text-amber-700'
+}
+
+/** 来源标签：微信绿 / 支付宝蓝 / 手工橙 */
+export function sourceTag(
+  source: string | null | undefined,
+): { label: string; className: string } | null {
+  if (source === 'wechat') return { label: '微信', className: 'bg-green-50 text-green-600' }
+  if (source === 'alipay') return { label: '支付宝', className: 'bg-blue-50 text-blue-600' }
+  if (source === 'manual') return { label: '手工', className: 'bg-orange-50 text-orange-600' }
+  return null
 }
 
 /** ISO 时间 → 北京时间「YYYY-MM-DD HH:mm」 */

@@ -24,6 +24,7 @@ import {
   describeBillError,
   filterBillsByCategory,
   isMissingBillTable,
+  sourceTag,
   type Granularity,
   type StatBill,
   type StatCategory,
@@ -414,6 +415,7 @@ export function StatsClient() {
                 {dayRows.map((bill) => {
                   const direction = billDirectionOf(bill.direction)
                   const category = bill.category_id ? categoryById.get(bill.category_id) : undefined
+                  const source = sourceTag(bill.source)
                   return (
                     <li key={bill.id} className="flex items-center gap-3 px-4 py-3">
                       <span
@@ -426,19 +428,28 @@ export function StatsClient() {
                         <p className="truncate text-base leading-snug text-gray-900">
                           {bill.commodity || '—'}
                         </p>
-                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-400">
-                          <span className="tabular-nums">
-                            {bill.trade_time ? bjDateTime(bill.trade_time) : '—'}
-                          </span>
-                          <span className="text-[11px]">{categoryLabel(bill.category_id)}</span>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-400">
+                          {source && (
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${source.className}`}
+                            >
+                              {source.label}
+                            </span>
+                          )}
                           {bill.creator_name && (
                             <span
-                              className={`rounded px-1 py-0.5 text-[10px] font-medium ${creatorTagClass(bill.creator_name)}`}
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${creatorTagClass(bill.creator_name)}`}
                             >
                               {bill.creator_name}
                             </span>
                           )}
+                          <span className="tabular-nums">
+                            {bill.trade_time ? bjDateTime(bill.trade_time) : '—'}
+                          </span>
                         </div>
+                        <p className="mt-1 text-[11px] text-gray-400">
+                          {categoryLabel(bill.category_id)}
+                        </p>
                       </div>
                       <span
                         className={cn(

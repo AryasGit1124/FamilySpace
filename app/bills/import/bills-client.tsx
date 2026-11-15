@@ -15,6 +15,7 @@ import {
   newBatchId,
   pickBillCategory,
   readBillSheet,
+  sourceTag,
   type BillSource,
 } from '@/lib/bills'
 import {
@@ -83,6 +84,9 @@ function BillRow({
   const emoji =
     category?.emoji ??
     (row.source === 'wechat' ? '💬' : row.source === 'alipay' ? '💙' : '✏️')
+  const source = sourceTag(row.source)
+  const stamp = row.trade_time ? bjDateTime(row.trade_time) : ''
+  const shortTime = stamp ? `${Number(stamp.slice(5, 7))}月${Number(stamp.slice(8, 10))}日 ${stamp.slice(11)}` : '—'
 
   return (
     <li className="flex items-center gap-3 bg-white px-4 py-3">
@@ -97,37 +101,50 @@ function BillRow({
         <p className="truncate text-base leading-snug text-gray-900">
           {row.commodity || row.counterparty || row.trade_type || '（无商品说明）'}
         </p>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-400">
-          <span className="tabular-nums">
-            {row.trade_time ? bjDateTime(row.trade_time) : '—'}
-          </span>
+
+        {/* 第二行：来源 / 登记人 / 时间 */}
+        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-400">
+          {source && (
+            <span
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${source.className}`}
+            >
+              {source.label}
+            </span>
+          )}
           {row.creator_name && (
             <span
-              className={`rounded px-1 py-0.5 text-[10px] font-medium ${creatorTagClass(row.creator_name)}`}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${creatorTagClass(row.creator_name)}`}
             >
               {row.creator_name}
             </span>
           )}
-          {category ? (
-            <span className="text-[11px]">{category.name}</span>
-          ) : categories.length > 0 ? (
-            <select
-              value=""
-              onChange={(event) => onAssign(row.id, event.target.value)}
-              aria-label="选择分类"
-              className="appearance-none rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-600 outline-none"
-            >
-              <option value="">待分类</option>
-              {categories.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.emoji} {item.name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <span className="text-[11px] text-amber-500">待分类</span>
-          )}
+          <span className="tabular-nums">{shortTime}</span>
         </div>
+
+        {/* 第三行：分类或极小的待分类下拉 */}
+        {(category || categories.length > 0) && (
+          <div className="mt-1">
+            {category ? (
+              <span className="text-[11px] text-gray-400">
+                {category.emoji} {category.name}
+              </span>
+            ) : (
+              <select
+                value=""
+                onChange={(event) => onAssign(row.id, event.target.value)}
+                aria-label="选择分类"
+                className="appearance-none rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-600 outline-none"
+              >
+                <option value="">待分类</option>
+                {categories.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.emoji} {item.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
       </div>
 
       <span
