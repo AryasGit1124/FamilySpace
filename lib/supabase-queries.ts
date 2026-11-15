@@ -697,19 +697,23 @@ export async function fetchRawBatches(limit = 5000): Promise<RawBatch[]> {
   return [...map.values()]
 }
 
-/** 某个批次的原始记录（预览用，默认前 200 行，按文件行号升序） */
-export async function fetchRawRows(batchId: string, limit = 200): Promise<RawBillRow[]> {
+/** 原始记录（预览用，默认最近 200 条；可按批次过滤，批次内按文件行号升序） */
+export async function fetchRawRows(params?: {
+  batchId?: string
+  limit?: number
+}): Promise<RawBillRow[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
-  const { data, error } = await scoped(
-    supabase
-      .from('bill_raw_data')
-      .select('id, source, batch_id, row_index, raw_json, created_at'),
+  let query = scoped(
+    supabase.from('bill_raw_data').select('id, source, batch_id, row_index, raw_json, created_at'),
     familyId,
   )
-    .eq('batch_id', batchId)
+  if (params?.batchId) query = query.eq('batch_id', params.batchId)
+
+  const { data, error } = await query
+    .order('created_at', { ascending: false })
     .order('row_index', { ascending: true })
-    .limit(limit)
+    .limit(params?.limit ?? 200)
 
   if (error) throw error
   return (data ?? []) as RawBillRow[]
