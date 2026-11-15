@@ -28,10 +28,13 @@ function yuan(value: number): string {
 /** 家庭账单：导入微信 / 支付宝 CSV，展示本月收支概况 */
 export function BillsClient({ initialStats }: { initialStats: BillStats }) {
   const router = useRouter()
-  const [stats] = useState(initialStats)
+  // 直接用 props：router.refresh() 后服务端会下发新统计，useState 会把新值锁死在首次渲染
+  const stats = initialStats
   const [phase, setPhase] = useState<Phase>('idle')
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  /** 保存进度（0-100）；解析阶段为 null，显示不确定进度条 */
+  const [percent, setPercent] = useState<number | null>(null)
   const inputRefs = useRef<Record<BillSource, HTMLInputElement | null>>({
     wechat: null,
     alipay: null,
@@ -43,6 +46,7 @@ export function BillsClient({ initialStats }: { initialStats: BillStats }) {
     if (busy) return
     setError('')
     setPhase('parsing')
+    setPercent(null)
     setMessage('正在解析文件…')
     try {
       const buffer = await file.arrayBuffer()
@@ -69,14 +73,22 @@ export function BillsClient({ initialStats }: { initialStats: BillStats }) {
       }
 
       setPhase('saving')
+      setPercent(0)
       setMessage(`已解析 ${result.rows.length} 条，正在保存…`)
       let saved = 0
       await insertBills(result.rows, (done) => {
         saved = done
-        setMessage(`已解析 ${result.rows.length} 条，已保存 ${saved} 条…`)
+        setPercent(Math.round((done / result.rows.length) * 100))
+        setMessage(
+          `已解析 ${result.rows.length} 条，已保存 ${saved} 条（${Math.round(
+            (done / result.rows.length) * 100,
+          )}%）…`,
+        )
       })
       setMessage('')
       setError('')
+      setPhase('idle')
+      setPercent(null)
       alert(
         `导入成功：${result.rows.length} 条记录已保存${
           result.skipped > 0 ? `（另有 ${result.skipped} 条不计收支已过滤）` : ''
@@ -136,7 +148,14 @@ export function BillsClient({ initialStats }: { initialStats: BillStats }) {
           <div className="rounded-2xl border bg-card px-4 py-3">
             <p className="text-sm font-medium">{message || '正在处理…'}</p>
             <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
-              <div className="h-full w-1/2 animate-pulse rounded-full bg-primary" />
+              {percent === null ? (
+                <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+              ) : (
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-300"
+                  style={{ width: `${Math.max(percent, 4)}%` }}
+                />
+              )}
             </div>
           </div>
         )}
