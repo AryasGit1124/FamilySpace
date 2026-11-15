@@ -221,7 +221,7 @@ function BillRow({
       <span
         className={
           isIncome
-            ? 'shrink-0 text-lg font-medium tabular-nums text-amber-600'
+            ? 'shrink-0 text-lg font-medium tabular-nums text-orange-500'
             : isExpense
               ? 'shrink-0 text-lg font-medium tabular-nums text-gray-900'
               : 'shrink-0 text-lg font-medium tabular-nums text-gray-400'
@@ -508,17 +508,39 @@ export function BillsClient() {
     })
   }, [monthRows, categories, filters, amountType, minAmount, maxAmount])
 
-  /** 顶部动态汇总：当前年月 + 分类筛选后的收支合计 */
-  const summary = useMemo(() => {
-    let income = 0
-    let expense = 0
+  /** 按交易月份分组（YYYY-MM 倒序），每组带收支小计 */
+  const groupedMonths = useMemo(() => {
+    const map = new Map<string, { expense: number; income: number; bills: OdsBillRow[] }>()
     for (const row of filteredRows) {
+      const stamp = row.trade_time ? bjDateTime(row.trade_time) : ''
+      const key = stamp ? stamp.slice(0, 7) : '未知时间'
+      let group = map.get(key)
+      if (!group) {
+        group = { expense: 0, income: 0, bills: [] }
+        map.set(key, group)
+      }
+      group.bills.push(row)
       const direction = row.direction ?? ''
-      if (direction.includes('收')) income += Number(row.amount ?? 0)
-      else if (direction.includes('支')) expense += Number(row.amount ?? 0)
+      if (direction.includes('收')) group.income += Number(row.amount ?? 0)
+      else if (direction.includes('支')) group.expense += Number(row.amount ?? 0)
     }
-    return { income, expense }
+    return [...map.entries()]
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([key, group]) => ({ key, ...group }))
   }, [filteredRows])
+
+  /** 渲染上限：按分组顺序取前 RENDER_LIMIT 条 */
+  const visibleGroups = useMemo(() => {
+    let remaining = RENDER_LIMIT
+    const result: typeof groupedMonths = []
+    for (const group of groupedMonths) {
+      if (remaining <= 0) break
+      const bills = group.bills.slice(0, remaining)
+      result.push({ ...group, bills })
+      remaining -= bills.length
+    }
+    return result
+  }, [groupedMonths])
 
   const handleFile = async (source: BillSource, file: File) => {
     if (busy) return
@@ -755,21 +777,7 @@ export function BillsClient() {
           <p className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
         )}
 
-        {/* 顶部时间 + 动态汇总：吸顶浅灰栏 */}
-        <div className="sticky top-16 z-20 -mx-1 mt-1 flex w-full max-w-full items-center justify-between gap-2 rounded-lg bg-gray-50/95 px-3 py-2 backdrop-blur">
-          <span className="shrink-0 text-sm font-semibold text-gray-900">
-            {timeLabel(filterYear, filterMonth)}
-          </span>
-          <div className="min-w-0 truncate text-right text-xs tabular-nums text-gray-500">
-            支出{' '}
-            <span className="font-semibold text-gray-900">¥{summary.expense.toFixed(2)}</span>
-            <span className="mx-1.5 text-gray-300">|</span>
-            收入{' '}
-            <span className="font-semibold text-emerald-600">¥{summary.income.toFixed(2)}</span>
-          </div>
-        </div>
-
-        {/* 明细：微信账单式极简列表 */}
+        {/* 明细：微信账单式极简列表（按月份分组，每组自带小计） */}
         <section className="mt-1">
           <header className="flex flex-wrap items-center gap-2 pb-2">
             <h2 className="text-base font-bold">账单明细</h2>
@@ -910,16 +918,36 @@ export function BillsClient() {
               {hasFilters ? '没有符合筛选条件的账单' : '没有账单'}
             </p>
           ) : (
-            <ul className="w-full max-w-full bg-white">
-              {filteredRows.slice(0, RENDER_LIMIT).map((row) => (
-                <BillRow
-                  key={row.id}
-                  row={row}
-                  categories={categories}
-                  onAssign={(id, categoryId) => void assignCategory(id, categoryId)}
-                />
+            <div className="w-full max-w-full">
+              {visibleGroups.map((group) => (
+                <section key={group.key} className="w-full max-w-full">
+                  {/* 月份头部：浅灰吸顶条 + 该月收支小计 */}
+                  <div className="sticky top-16 z-10 flex w-full max-w-full items-center justify-between gap-2 bg-gray-50 px-3 py-2">
+                    <span className="shrink-0 text-sm font-bold text-gray-900">
+                      {group.key === '未知时间'
+                        ? '未知时间'
+                        : `${group.key.slice(0, 4)}年${Number(group.key.slice(5, 7))}月`}
+                    </span>
+                    <span className="min-w-0 truncate text-[11px] tabular-nums text-gray-400">
+                      支出 <span className="font-medium text-gray-600">¥{group.expense.toFixed(2)}</span>
+                      <span className="mx-1 text-gray-300">·</span>
+                      收入 <span className="font-medium text-gray-600">¥{group.income.toFixed(2)}</span>
+                    </span>
+                  </div>
+
+                  <ul className="w-full max-w-full bg-white">
+                    {group.bills.map((row) => (
+                      <BillRow
+                        key={row.id}
+                        row={row}
+                        categories={categories}
+                        onAssign={(id, categoryId) => void assignCategory(id, categoryId)}
+                      />
+                    ))}
+                  </ul>
+                </section>
               ))}
-            </ul>
+            </div>
           )}
 
           {filteredRows.length > RENDER_LIMIT && (
@@ -930,7 +958,7 @@ export function BillsClient() {
 
           {filteredRows.length > 0 && filteredRows.length <= RENDER_LIMIT && (
             <p className="py-2 text-xs text-muted-foreground">
-              按交易时间倒序；筛选基于已加载的全部账单。「待分类」可手动指定分类。
+              按交易时间倒序、按月分组；筛选基于已加载的全部账单。「待分类」可手动指定分类。
             </p>
           )}
         </section>
