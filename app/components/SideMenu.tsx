@@ -89,22 +89,31 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
 
   const renderItem = (item: MenuItem) => {
     const Icon = item.icon
+    const active = pathname === item.href
     return (
       <Link
         key={item.href}
         href={item.href}
         onClick={onClose}
         className={cn(
-          'flex items-center rounded-xl font-medium transition-colors hover:bg-muted active:bg-muted/80',
+          'flex items-center gap-3 rounded-lg font-medium transition-colors',
           item.sub
-            ? 'ml-8 gap-3 px-3 py-3 text-sm text-muted-foreground'
-            : 'gap-4 px-4 py-4 text-base',
+            ? 'py-2.5 pl-10 pr-3 text-sm'
+            : 'px-3 py-3 text-[15px]',
+          active
+            ? 'bg-muted text-foreground'
+            : item.sub
+              ? 'text-muted-foreground hover:bg-muted/70'
+              : 'text-slate-700 hover:bg-muted/70 active:bg-muted',
         )}
       >
-        <Icon className={item.sub ? 'size-5 text-primary' : 'size-7 text-primary'} aria-hidden="true" />
-        {item.label}
+        <Icon
+          className={cn('size-5 shrink-0', active ? 'text-primary' : 'text-slate-400')}
+          aria-hidden="true"
+        />
+        <span className="min-w-0 flex-1 truncate">{item.label}</span>
         {item.href === '/parent/approvals' && pendingCount > 0 && (
-          <span className="ml-auto flex min-w-6 items-center justify-center rounded-full bg-red-500 px-2 py-0.5 text-xs font-bold text-white">
+          <span className="flex min-w-5 shrink-0 items-center justify-center rounded-full bg-red-500 px-1.5 py-0.5 text-[11px] font-bold text-white">
             {pendingCount > 99 ? '99+' : pendingCount}
           </span>
         )}
@@ -128,20 +137,22 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
       <aside
         aria-hidden={!isOpen}
         className={cn(
-          'fixed left-0 top-0 z-[70] h-full w-[85%] bg-white shadow-xl transition-transform duration-300 sm:w-72 lg:w-80',
+          'fixed left-0 top-0 z-[70] flex h-full w-[85%] flex-col bg-white shadow-xl transition-transform duration-300 sm:w-72 lg:w-80',
           isOpen ? 'translate-x-0' : 'pointer-events-none -translate-x-full',
         )}
       >
-        <div className="flex h-16 items-center gap-2 border-b px-5">
+        <div className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
           <span className="text-lg font-bold">我的学习台</span>
           {profile && (
-            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-700">
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-700">
               {roleLabel(profile.display_name, profile.role)}
             </span>
           )}
         </div>
-        <nav className="flex flex-col gap-1 p-3" aria-label="主菜单">
+        <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-2.5" aria-label="主菜单">
           {MENU_ITEMS.map(renderItem)}
+
+          <div className="my-1 h-px shrink-0 bg-border" aria-hidden="true" />
 
           {/* 家庭账单：可展开子菜单（导入 / 规则 / 统计） */}
           <button
@@ -149,15 +160,18 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
             onClick={() => setBillsOpen((prev) => !prev)}
             aria-expanded={billsOpen}
             className={cn(
-              'flex items-center gap-4 rounded-xl px-4 py-4 text-base font-medium transition-colors hover:bg-muted active:bg-muted/80',
-              billsActive && 'bg-primary/5 text-primary',
+              'flex w-full items-center gap-3 rounded-lg px-3 py-3 text-[15px] font-medium transition-colors',
+              billsActive ? 'bg-muted text-foreground' : 'text-slate-700 hover:bg-muted/70 active:bg-muted',
             )}
           >
-            <Wallet className="size-7 text-primary" aria-hidden="true" />
-            家庭账单
+            <Wallet
+              className={cn('size-5 shrink-0', billsActive ? 'text-primary' : 'text-slate-400')}
+              aria-hidden="true"
+            />
+            <span className="flex-1 truncate text-left">家庭账单</span>
             <ChevronDown
               className={cn(
-                'ml-auto size-5 text-muted-foreground transition-transform',
+                'size-4 shrink-0 text-slate-400 transition-transform',
                 billsOpen && 'rotate-180',
               )}
               aria-hidden="true"
@@ -165,7 +179,7 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
           </button>
 
           {billsOpen && (
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-0.5">
               {BILL_ITEMS.map((item) => {
                 const Icon = item.icon
                 const active = pathname === item.href
@@ -175,28 +189,35 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
                     href={item.href}
                     onClick={onClose}
                     className={cn(
-                      'ml-8 flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-colors hover:bg-muted active:bg-muted/80',
-                      active ? 'bg-primary/10 text-primary' : 'text-muted-foreground',
+                      'flex items-center gap-3 rounded-lg py-2.5 pl-10 pr-3 text-sm transition-colors',
+                      active
+                        ? 'bg-primary/10 font-medium text-primary'
+                        : 'text-muted-foreground hover:bg-muted/70',
                     )}
                   >
-                    <Icon className="size-5 text-primary" aria-hidden="true" />
-                    {item.label}
+                    <Icon className="size-4 shrink-0" aria-hidden="true" />
+                    <span className="truncate">{item.label}</span>
                   </Link>
                 )
               })}
             </div>
           )}
 
+          <div className="my-1 h-px shrink-0 bg-border" aria-hidden="true" />
+
           {TAIL_ITEMS.map(renderItem)}
+
+          <div className="my-1 h-px shrink-0 bg-border" aria-hidden="true" />
+
           <button
             type="button"
             onClick={() => {
               onClose()
               setViewAsChild(true)
             }}
-            className="mt-2 flex items-center gap-4 rounded-xl bg-amber-50 px-4 py-4 text-base font-medium text-amber-700 transition-colors hover:bg-amber-100 active:bg-amber-200"
+            className="flex items-center gap-3 rounded-lg px-3 py-3 text-[15px] font-medium text-amber-700 transition-colors hover:bg-amber-50 active:bg-amber-100"
           >
-            <Baby className="size-7" aria-hidden="true" />
+            <Baby className="size-5 shrink-0" aria-hidden="true" />
             切换到孩子端
           </button>
           <button
@@ -205,9 +226,9 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
               onClose()
               void signOut()
             }}
-            className="mt-2 flex items-center gap-4 rounded-xl px-4 py-4 text-base font-medium text-muted-foreground transition-colors hover:bg-muted active:bg-muted/80"
+            className="flex items-center gap-3 rounded-lg px-3 py-3 text-[15px] font-medium text-muted-foreground transition-colors hover:bg-muted/70 active:bg-muted"
           >
-            <LogOut className="size-7" aria-hidden="true" />
+            <LogOut className="size-5 shrink-0" aria-hidden="true" />
             退出登录
           </button>
         </nav>

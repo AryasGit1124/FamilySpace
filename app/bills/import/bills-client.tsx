@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { CreditCard, Wallet, Wand2, type LucideIcon } from 'lucide-react'
 import { PageHeader } from '@/components/page-header'
 import { ManualBillSheet } from '@/app/bills/manual-bill-sheet'
 import {
@@ -35,17 +36,22 @@ type Phase = 'idle' | 'parsing' | 'saving'
 /** 明细一次展示条数 */
 const PAGE_LIMIT = 200
 
-const SOURCE_META: Record<BillSource, { label: string; hint: string; className: string; short: string }> = {
+const SOURCE_META: Record<
+  BillSource,
+  { label: string; hint: string; icon: LucideIcon; iconClass: string; short: string }
+> = {
   wechat: {
     label: '导入微信账单',
     hint: '钱包 → 账单 → 常见问题 → 下载账单',
-    className: 'bg-emerald-500 active:bg-emerald-600',
+    icon: Wallet,
+    iconClass: 'text-emerald-500',
     short: '微信',
   },
   alipay: {
     label: '导入支付宝账单',
     hint: '我的 → 账单 → … → 开具交易流水证明',
-    className: 'bg-sky-500 active:bg-sky-600',
+    icon: CreditCard,
+    iconClass: 'text-sky-500',
     short: '支付宝',
   },
 }
@@ -376,23 +382,25 @@ export function BillsClient() {
           </div>
         )}
 
-        {/* 上传区：全宽大按钮 */}
-        <div className="grid gap-2 sm:grid-cols-2">
+        {/* 上传区：紧凑双列白色按钮，给明细留出首屏空间 */}
+        <div className="grid grid-cols-2 gap-2">
           {(Object.keys(SOURCE_META) as BillSource[]).map((source) => {
             const meta = SOURCE_META[source]
+            const Icon = meta.icon
             return (
               <button
                 key={source}
                 type="button"
                 disabled={busy}
+                title={meta.hint}
                 onClick={() => {
                   pendingSource.current = source
                   inputRef.current?.click()
                 }}
-                className={`flex w-full flex-col items-start gap-1 rounded-2xl px-5 py-5 text-left text-white transition-colors disabled:opacity-60 ${meta.className}`}
+                className="flex h-12 min-w-0 items-center justify-center gap-2 rounded-xl border bg-white px-3 text-sm font-semibold text-slate-700 transition-colors active:bg-slate-50 disabled:opacity-60"
               >
-                <span className="text-base font-bold">{meta.label}</span>
-                <span className="text-xs leading-snug opacity-90">{meta.hint}</span>
+                <Icon className={`size-4 shrink-0 ${meta.iconClass}`} aria-hidden="true" />
+                <span className="truncate">{meta.label}</span>
               </button>
             )
           })}
@@ -413,9 +421,9 @@ export function BillsClient() {
           type="button"
           disabled={busy || cleaning}
           onClick={() => void runRules()}
-          className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-500 px-4 py-5 text-base font-bold text-white shadow-lg active:from-violet-600 active:to-fuchsia-600 disabled:opacity-60"
+          className="mt-2 flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 text-sm font-semibold text-primary transition-colors active:bg-primary/10 disabled:opacity-60"
         >
-          <span aria-hidden="true">🪄</span>
+          <Wand2 className="size-4 shrink-0" aria-hidden="true" />
           {cleaning ? '正在应用规则…' : '一键应用规则自动分类'}
         </button>
 
@@ -438,7 +446,7 @@ export function BillsClient() {
         {error && <p className="mt-3 rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</p>}
 
         {/* 明细卡片流 */}
-        <section className="mt-6">
+        <section className="mt-4">
           <header className="mb-2 flex items-center gap-2">
             <h2 className="text-base font-bold">账单明细</h2>
             <span className="text-xs text-muted-foreground">
