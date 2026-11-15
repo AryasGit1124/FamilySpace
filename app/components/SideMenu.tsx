@@ -26,7 +26,7 @@ type MenuItem = { href: string; label: string; icon: LucideIcon; sub?: boolean }
 
 const MENU_ITEMS: MenuItem[] = [
   { href: '/', label: '返回学习台 / 今日', icon: Home },
-  { href: '/parent/approvals', label: '打卡审核', icon: ClipboardCheck },
+  { href: '/parent/approvals', label: '审核中心', icon: ClipboardCheck },
   { href: '/growth', label: '成长档案', icon: Camera },
   { href: '/stats', label: '学习统计', icon: BarChart3 },
   { href: '/bills', label: '家庭账单', icon: Wallet },
