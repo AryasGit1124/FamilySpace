@@ -4,7 +4,7 @@ import { isoDayOfWeek, shiftDate, streakEndingAt, todayStr } from '@/lib/dates'
 import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
 import { baseStarsForCheckin, STREAK_BONUS_STARS } from '@/lib/star-rules'
-import { type BillDirection, type BillSource, type ParsedBill } from '@/lib/bills'
+import { type BillSource, type RawRow } from '@/lib/bills'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -612,72 +612,107 @@ export async function rejectExchangeRequest(requestId: string): Promise<void> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 家庭账单
+// 家庭账单（ODS 原始层）
+// family_bills 已废弃，导入只落 bill_raw_data，清洗与统计后续再做
 // ──────────────────────────────────────────────────────────────────────────────
 
-export type BillRow = {
+export type RawBillRow = {
   id: string
-  occurred_at: string
-  source: BillSource
-  direction: BillDirection
-  amount: number
-  category: string | null
-  description: string | null
+  source: string
+  batch_id: string | null
+  row_index: number | null
+  raw_json: Record<string, string>
+  created_at: string
 }
 
-/** 批量写入账单：每批 500 条，避免单次请求体过大 */
-export async function insertBills(
-  rows: ParsedBill[],
-  onProgress?: (saved: number, total: number) => void,
-): Promise<number> {
+export type RawBatch = {
+  batchId: string
+  source: string
+  count: number
+  createdAt: string
+}
+
+/** 导入时每批写入的行数 */
+const RAW_BILL_BATCH_SIZE = 100
+
+/** 原始账单入库：只做搬运，不改任何字段；每 100 条一批 */
+export async function insertRawBills(params: {
+  source: BillSource
+  batchId: string
+  rows: RawRow[]
+  onProgress?: (saved: number, total: number) => void
+}): Promise<number> {
+  const { source, batchId, rows, onProgress } = params
   if (rows.length === 0) return 0
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   if (!familyId) throw new Error('没有找到当前家庭，请重新登录后再导入')
 
-  const BATCH_SIZE = 500
   let saved = 0
-  for (let start = 0; start < rows.length; start += BATCH_SIZE) {
-    const batch = rows.slice(start, start + BATCH_SIZE).map((row) => ({
-      occurred_at: row.occurredAt,
-      source: row.source,
-      direction: row.direction,
-      amount: row.amount,
-      category: row.category || null,
-      description: row.description || null,
+  for (let start = 0; start < rows.length; start += RAW_BILL_BATCH_SIZE) {
+    const batch = rows.slice(start, start + RAW_BILL_BATCH_SIZE).map((row) => ({
       family_id: familyId,
+      source,
+      batch_id: batchId,
+      row_index: row.rowIndex,
+      raw_json: row.data,
     }))
-    const { error } = await supabase.from('family_bills').insert(batch)
+    const { error } = await supabase.from('bill_raw_data').insert(batch)
     if (error) throw error
     saved += batch.length
     onProgress?.(saved, rows.length)
   }
-
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new Event('bills-changed'))
-  }
   return saved
 }
 
-/**
- * 读取账单明细（默认最近 5000 条，按时间倒序）。
- * 月/年汇总、分类统计与筛选都放在页面前端计算，切换即时响应。
- * 读取失败直接抛错，由页面提示「表还没建」等具体原因。
- */
-export async function fetchBills(limit = 5000): Promise<BillRow[]> {
+/** 导入批次列表：只取轻量列，按 batch_id 聚合条数与最近时间 */
+export async function fetchRawBatches(limit = 5000): Promise<RawBatch[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { data, error } = await scoped(
+    supabase.from('bill_raw_data').select('batch_id, source, created_at'),
+    familyId,
+  )
+    .order('created_at', { ascending: false })
+    .limit(limit)
+
+  if (error) throw error
+
+  const map = new Map<string, RawBatch>()
+  for (const row of data ?? []) {
+    const batchId = (row.batch_id as string | null) ?? '(无批次号)'
+    const existing = map.get(batchId)
+    if (existing) {
+      existing.count += 1
+    } else {
+      // 结果已按 created_at 倒序，首次出现即该批次的最新时间
+      map.set(batchId, {
+        batchId,
+        source: (row.source as string) ?? '',
+        count: 1,
+        createdAt: (row.created_at as string) ?? '',
+      })
+    }
+  }
+  return [...map.values()]
+}
+
+/** 某个批次的原始记录（预览用，默认前 200 行，按文件行号升序） */
+export async function fetchRawRows(batchId: string, limit = 200): Promise<RawBillRow[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const { data, error } = await scoped(
     supabase
-      .from('family_bills')
-      .select('id, occurred_at, source, direction, amount, category, description'),
+      .from('bill_raw_data')
+      .select('id, source, batch_id, row_index, raw_json, created_at'),
     familyId,
   )
-    .order('occurred_at', { ascending: false })
+    .eq('batch_id', batchId)
+    .order('row_index', { ascending: true })
     .limit(limit)
 
   if (error) throw error
-  return (data ?? []) as BillRow[]
+  return (data ?? []) as RawBillRow[]
 }
 
 /**

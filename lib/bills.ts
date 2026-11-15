@@ -212,15 +212,6 @@ function findHeaderLine(lines: string[], source: BillSource): number {
   return Math.min(FALLBACK_SKIP_LINES[source], Math.max(0, lines.length - 1))
 }
 
-/** 解析 CSV 文本（微信 / 支付宝都有导出 .csv 的情况） */
-export function parseBillCsv(text: string, source: BillSource): ParseResult {
-  const cleanText = text.replace(/^\uFEFF/, '')
-  const lines = cleanText.split(/\r?\n/)
-  const body = lines.slice(findHeaderLine(lines, source)).join('\n')
-  const parsed = Papa.parse<string[]>(body, { skipEmptyLines: 'greedy' })
-  return parseBillSheet(parsed.data as unknown[][], source)
-}
-
 /** 文件字节 → 文本：优先 UTF-8，出现替换符再按 GBK（微信早期导出）解一次 */
 export function decodeBillText(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
@@ -237,48 +228,118 @@ export function decodeBillText(buffer: ArrayBuffer): string {
   }
 }
 
-/** 解析 .xls / .xlsx：动态引入 xlsx（体积较大），只取第一张表 */
-export async function parseBillWorkbook(
-  buffer: ArrayBuffer,
-  source: BillSource,
-): Promise<ParseResult> {
+/** CSV 文本 → 二维数组（先按整行文本定位表头，避免说明里的引号打乱解析） */
+function readCsvSheet(text: string, source: BillSource): unknown[][] {
+  const cleanText = text.replace(/^\uFEFF/, '')
+  const lines = cleanText.split(/\r?\n/)
+  const body = lines.slice(findHeaderLine(lines, source)).join('\n')
+  return Papa.parse<string[]>(body, { skipEmptyLines: 'greedy' }).data as unknown as unknown[][]
+}
+
+/** .xls / .xlsx → 二维数组：动态引入 xlsx（体积较大），只取第一张表 */
+async function readWorkbookSheet(buffer: ArrayBuffer): Promise<unknown[][]> {
   const XLSX = await import('xlsx')
   const workbook = XLSX.read(buffer, { type: 'array', cellDates: true })
   const firstSheetName = workbook.SheetNames[0]
-  if (!firstSheetName) return { rows: [], skipped: 0, total: 0 }
+  if (!firstSheetName) return []
   const worksheet = workbook.Sheets[firstSheetName]
-  const sheet = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
+  return XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
     header: 1,
     raw: true,
     blankrows: false,
   }) as unknown as unknown[][]
-  return parseBillSheet(sheet, source)
 }
 
 /**
- * 统一入口：按后缀选择解析方式。
- * 微信新版导出是 .xls；也有把 CSV 内容直接命名为 .xls 的文件，
+ * 按后缀把文件读成二维数组（不判断表头、不清洗，交给调用方）。
+ * 微信新版导出是 .xlsx；也有把 CSV 内容直接命名为 .xls 的文件，
  * 所以 xlsx 解析失败时回退成文本 CSV 再试一次。
  */
-export async function parseBillFile(
+export async function readBillSheet(
   file: { name: string; arrayBuffer: () => Promise<ArrayBuffer> },
   source: BillSource,
-): Promise<ParseResult> {
+): Promise<unknown[][]> {
   const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
   const buffer = await file.arrayBuffer()
 
-  if (ext === 'csv' || ext === 'txt') return parseBillCsv(decodeBillText(buffer), source)
+  if (ext === 'csv' || ext === 'txt') return readCsvSheet(decodeBillText(buffer), source)
 
   if (ext === 'xls' || ext === 'xlsx') {
     try {
-      return await parseBillWorkbook(buffer, source)
+      return await readWorkbookSheet(buffer)
     } catch (err) {
       console.warn('[Bills] xlsx 解析失败，回退按文本 CSV 解析:', err)
-      return parseBillCsv(decodeBillText(buffer), source)
+      return readCsvSheet(decodeBillText(buffer), source)
     }
   }
 
   throw new Error('只支持 .csv / .xls / .xlsx 格式的账单文件')
+}
+
+/** ODS 原始行：rowIndex 为文件中的行号（从 1 开始），data 为「表头 → 单元格」 */
+export type RawRow = { rowIndex: number; data: Record<string, string> }
+
+/** 找表头行：第一列文本包含「交易时间」 */
+export function findRawHeaderRow(sheet: unknown[][]): number {
+  const limit = Math.min(sheet.length, 60)
+  for (let i = 0; i < limit; i += 1) {
+    const first = cellText((sheet[i] ?? [])[0]).replace(/^\uFEFF/, '').trim()
+    if (first.includes('交易时间')) return i
+  }
+  throw new Error('没找到表头行：文件第一列没有「交易时间」，请确认是微信 / 支付宝官方导出的账单')
+}
+
+/** 表头 + 数据行 → 原始 JSON 行；字段名保持文件原样，单元格一律转文本 */
+export function buildRawRows(sheet: unknown[][], headerIndex: number): RawRow[] {
+  const header = (sheet[headerIndex] ?? []).map((cell) => cellText(cell).replace(/^\uFEFF/, '').trim())
+  const rows: RawRow[] = []
+
+  for (let i = headerIndex + 1; i < sheet.length; i += 1) {
+    const row = sheet[i]
+    if (!Array.isArray(row)) continue
+    const values = row.map((cell) => cellText(cell).trim())
+    if (values.every((value) => !value)) continue
+
+    const data: Record<string, string> = {}
+    header.forEach((key, index) => {
+      const value = values[index] ?? ''
+      // 空表头且空值（支付宝行尾多余的逗号）直接忽略
+      if (!key && !value) return
+      data[key || `列${index + 1}`] = value
+    })
+    rows.push({ rowIndex: i + 1, data })
+  }
+  return rows
+}
+
+/** 批次号：时间戳 + 4 位随机，便于按批次撤回 */
+export function newBatchId(): string {
+  const d = new Date()
+  const stamp = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}${pad2(
+    d.getHours(),
+  )}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`
+  return `${stamp}-${Math.random().toString(36).slice(2, 6)}`
+}
+
+/** 解析 CSV 文本（微信 / 支付宝都有导出 .csv 的情况） */
+export function parseBillCsv(text: string, source: BillSource): ParseResult {
+  return parseBillSheet(readCsvSheet(text, source), source)
+}
+
+/** 解析 .xls / .xlsx */
+export async function parseBillWorkbook(
+  buffer: ArrayBuffer,
+  source: BillSource,
+): Promise<ParseResult> {
+  return parseBillSheet(await readWorkbookSheet(buffer), source)
+}
+
+/** 统一入口：先读成二维数组，再按表头清洗（清洗逻辑留给后续 ETL 使用） */
+export async function parseBillFile(
+  file: { name: string; arrayBuffer: () => Promise<ArrayBuffer> },
+  source: BillSource,
+): Promise<ParseResult> {
+  return parseBillSheet(await readBillSheet(file, source), source)
 }
 
 /** 汇总用的最小行结构：数据库行与解析结果都能直接传入 */
