@@ -167,6 +167,13 @@ label {
   * {
     @apply border-border outline-ring/50;
   }
+  /* 兜底：任何子元素的超宽内容都不允许把整页撑出横向滚动（手机左右晃动的根因） */
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: hidden;
+    overflow-x: clip;
+  }
   body {
     @apply bg-background text-foreground;
   }

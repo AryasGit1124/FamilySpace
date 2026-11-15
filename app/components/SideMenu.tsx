@@ -38,7 +38,7 @@ const MENU_ITEMS: MenuItem[] = [
 
 /** 家庭账单子菜单：导入 → 规则 → 统计 */
 const BILL_ITEMS: MenuItem[] = [
-  { href: '/bills/import', label: '账单导入', icon: Inbox },
+  { href: '/bills/import', label: '导入数据', icon: Inbox },
   { href: '/bills/rules', label: '规则定义', icon: SlidersHorizontal },
   { href: '/bills/stats', label: '数据统计', icon: PieChart },
 ]
@@ -165,7 +165,7 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
             )}
           >
             <Wallet
-              className={cn('size-5 shrink-0', billsActive ? 'text-primary' : 'text-slate-400')}
+              className={cn('size-5 shrink-0', billsActive ? 'text-gray-700' : 'text-slate-400')}
               aria-hidden="true"
             />
             <span className="flex-1 truncate text-left">家庭账单</span>
@@ -179,7 +179,7 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
           </button>
 
           {billsOpen && (
-            <div className="flex flex-col gap-0.5">
+            <div className="flex flex-col">
               {BILL_ITEMS.map((item) => {
                 const Icon = item.icon
                 const active = pathname === item.href
@@ -189,14 +189,14 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
                     href={item.href}
                     onClick={onClose}
                     className={cn(
-                      'flex items-center gap-3 rounded-lg py-2.5 pl-10 pr-3 text-sm transition-colors',
+                      'flex w-full items-center rounded-lg bg-transparent px-4 py-3 text-sm transition-colors',
                       active
-                        ? 'bg-primary/10 font-medium text-primary'
-                        : 'text-muted-foreground hover:bg-muted/70',
+                        ? 'font-medium text-gray-900'
+                        : 'text-gray-700 hover:bg-gray-100',
                     )}
                   >
-                    <Icon className="size-4 shrink-0" aria-hidden="true" />
-                    <span className="truncate">{item.label}</span>
+                    <Icon className="mr-3 h-5 w-5 shrink-0 text-gray-500" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate">{item.label}</span>
                   </Link>
                 )
               })}

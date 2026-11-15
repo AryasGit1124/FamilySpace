@@ -215,6 +215,21 @@ export type OdsBill = {
   merchantNo: string | null
   remark: string | null
   rawData: Record<string, string>
+  /** 导入时按规则命中的分类（可空） */
+  categoryId?: string | null
+}
+
+/** 没有交易单号时的兜底去重键：分钟级时间 + 金额 + 商品说明 */
+export function billFallbackKey(
+  tradeTime: string | null,
+  amount: number | null,
+  commodity: string | null,
+): string {
+  const parsed = tradeTime ? Date.parse(tradeTime) : Number.NaN
+  const minute = Number.isNaN(parsed)
+    ? (tradeTime ?? '')
+    : new Date(parsed).toISOString().slice(0, 16)
+  return `${minute}_${amount ?? ''}_${(commodity ?? '').trim()}`
 }
 
 /** 该行所有单元格 →「表头 → 文本」，键名保持文件原样 */
@@ -275,16 +290,17 @@ export function newBatchId(): string {
   return `${stamp}-${Math.random().toString(36).slice(2, 6)}`
 }
 
-/** 规则匹配字段：交易对方 / 商品说明 / 全部 */
+/** 规则匹配字段：交易对方 / 商品说明 / 交易类型或分类 / 全部 */
 export type BillRuleLike = {
   keyword: string
-  match_field: 'counterparty' | 'commodity' | 'all'
+  match_field: 'counterparty' | 'commodity' | 'trade_type' | 'all'
 }
 
 /** 账单里参与关键词匹配的字段 */
 export type BillTextLike = {
   counterparty?: string | null
   commodity?: string | null
+  trade_type?: string | null
 }
 
 /** 单条规则是否命中（不区分大小写的包含匹配） */
@@ -294,7 +310,8 @@ export function ruleMatches(bill: BillTextLike, rule: BillRuleLike): boolean {
   const hit = (value: string | null | undefined) => (value ?? '').toLowerCase().includes(keyword)
   if (rule.match_field === 'counterparty') return hit(bill.counterparty)
   if (rule.match_field === 'commodity') return hit(bill.commodity)
-  return hit(bill.counterparty) || hit(bill.commodity)
+  if (rule.match_field === 'trade_type') return hit(bill.trade_type)
+  return hit(bill.counterparty) || hit(bill.commodity) || hit(bill.trade_type)
 }
 
 /**

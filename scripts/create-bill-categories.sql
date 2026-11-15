@@ -30,10 +30,17 @@ create table if not exists public.bill_category_rules (
   category_id uuid not null references public.bill_categories (id) on delete cascade,
   keyword text not null,
   match_field text not null default 'all'
-    check (match_field in ('counterparty', 'commodity', 'all')),
+    check (match_field in ('counterparty', 'commodity', 'trade_type', 'all')),
   priority int not null default 100,   -- 数字越大越优先
   created_at timestamptz default now()
 );
+
+-- 2.1 补「交易类型/分类」匹配字段（旧库已建的 check 约束需要重建）
+alter table public.bill_category_rules
+  drop constraint if exists bill_category_rules_match_field_check;
+alter table public.bill_category_rules
+  add constraint bill_category_rules_match_field_check
+  check (match_field in ('counterparty', 'commodity', 'trade_type', 'all'));
 
 create index if not exists bill_category_rules_category_idx
   on public.bill_category_rules (family_id, category_id, priority desc);

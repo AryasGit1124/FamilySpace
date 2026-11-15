@@ -37,7 +37,7 @@ export function BillDetailTable({
 
   return (
     <div className="min-h-0 flex-1 overflow-auto rounded-2xl border bg-card">
-      <table className="w-full min-w-[42rem] border-collapse text-xs">
+      <table className="w-full min-w-full border-collapse text-xs">
         <thead className="sticky top-0 z-10 bg-muted">
           <tr className="text-left text-muted-foreground">
             <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">交易时间</th>

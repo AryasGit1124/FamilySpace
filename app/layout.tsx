@@ -51,7 +51,7 @@ export default function RootLayout({
           <AppStateProvider>
             <LayoutWrapper>
               {/* 手机端占满；iPad 竖屏居中留白，横屏（lg）放宽到 max-w-7xl 减少两侧空白 */}
-              <main className="mx-auto w-full max-w-5xl md:px-6 lg:max-w-7xl lg:px-8">{children}</main>
+              <main className="mx-auto w-full max-w-5xl overflow-x-clip md:px-6 lg:max-w-7xl lg:px-8">{children}</main>
             </LayoutWrapper>
             <BottomTabBar />
           </AppStateProvider>

@@ -17,8 +17,8 @@ export function PageHeader({
   backLabel?: string
 }) {
   return (
-    <header className="flex items-end justify-between gap-4 px-5 pt-8 pb-4">
-      <div>
+    <header className="flex w-full max-w-full items-end justify-between gap-4 px-5 pt-8 pb-4">
+      <div className="min-w-0">
         {backHref && (
           <Link
             href={backHref}

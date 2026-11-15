@@ -11,6 +11,7 @@ import {
   insertBillCategory,
   insertBillRule,
   updateBillCategory,
+  updateBillRule,
   type BillCategory,
   type BillCategoryRule,
   type BillRuleField,
@@ -23,11 +24,18 @@ const EMOJIS = ['🥬', '🍚', '🛒', '☕', '🍜', '🚗', '🚌', '💊', '
 const FIELD_LABELS: Record<BillRuleField, string> = {
   counterparty: '交易对方',
   commodity: '商品说明',
+  trade_type: '交易类型/分类',
   all: '全部',
 }
 
 type CategoryDraft = { id?: string; name: string; emoji: string; parentId?: string | null }
-type RuleDraft = { keyword: string; field: BillRuleField; priority: string }
+type RuleDraft = {
+  keyword: string
+  field: BillRuleField
+  priority: string
+  /** 所属分类：编辑时允许把规则移到另一个分类 */
+  categoryId: string
+}
 
 /** 通用弹窗外壳：手机从底部弹出，iPad 居中 */
 function Modal({
@@ -51,8 +59,8 @@ function Modal({
         role="dialog"
         aria-modal="true"
       >
-        <div className="mb-3 flex items-center gap-2">
-          <h3 className="text-base font-bold">{title}</h3>
+        <div className="mb-3 flex min-w-0 items-center gap-2">
+          <h3 className="min-w-0 flex-1 truncate text-base font-bold">{title}</h3>
           <button
             type="button"
             onClick={onClose}
@@ -82,6 +90,8 @@ export function RulesClient() {
 
   const [categoryDraft, setCategoryDraft] = useState<CategoryDraft | null>(null)
   const [ruleDraft, setRuleDraft] = useState<RuleDraft | null>(null)
+  /** 非空表示正在编辑这条规则，为空表示新增 */
+  const [editingRuleId, setEditingRuleId] = useState('')
   const [formError, setFormError] = useState('')
 
   const load = useCallback(async () => {
@@ -174,6 +184,32 @@ export function RulesClient() {
     }
   }
 
+  /** 打开「添加规则」弹窗（清空编辑状态） */
+  const openCreateRule = (categoryId: string) => {
+    setFormError('')
+    setEditingRuleId('')
+    setRuleDraft({ keyword: '', field: 'counterparty', priority: '100', categoryId })
+  }
+
+  /** 打开「编辑规则」弹窗并回填当前规则数据 */
+  const openEditRule = (rule: BillCategoryRule) => {
+    setFormError('')
+    setEditingRuleId(rule.id)
+    setRuleDraft({
+      keyword: rule.keyword,
+      field: rule.match_field,
+      priority: String(rule.priority),
+      categoryId: rule.category_id,
+    })
+  }
+
+  /** 关闭规则弹窗并清空编辑状态 */
+  const closeRuleDraft = () => {
+    setRuleDraft(null)
+    setEditingRuleId('')
+    setFormError('')
+  }
+
   const saveRule = async () => {
     if (!ruleDraft || !selected) return
     const keyword = ruleDraft.keyword.trim()
@@ -186,17 +222,36 @@ export function RulesClient() {
       setFormError('优先级需要填数字')
       return
     }
+    const categoryId = ruleDraft.categoryId || selected.id
+    if (!categoryId) {
+      setFormError('请选择所属分类')
+      return
+    }
     setSaving(true)
     setFormError('')
     try {
-      const created = await insertBillRule({
-        categoryId: selected.id,
-        keyword,
-        matchField: ruleDraft.field,
-        priority,
-      })
-      setRules((prev) => [...prev, created].sort((a, b) => b.priority - a.priority))
-      setRuleDraft(null)
+      if (editingRuleId) {
+        const updated = await updateBillRule(editingRuleId, {
+          keyword,
+          matchField: ruleDraft.field,
+          priority,
+          categoryId,
+        })
+        setRules((prev) =>
+          prev
+            .map((rule) => (rule.id === updated.id ? updated : rule))
+            .sort((a, b) => b.priority - a.priority),
+        )
+      } else {
+        const created = await insertBillRule({
+          categoryId,
+          keyword,
+          matchField: ruleDraft.field,
+          priority,
+        })
+        setRules((prev) => [...prev, created].sort((a, b) => b.priority - a.priority))
+      }
+      closeRuleDraft()
     } catch (err) {
       setFormError(describeBillError(err))
     } finally {
@@ -215,7 +270,7 @@ export function RulesClient() {
   }
 
   return (
-    <div className="min-h-[100dvh]">
+    <div className="min-h-[100dvh] w-full max-w-full overflow-x-hidden">
       <PageHeader
         title="分类与规则"
         subtitle={selected ? '这个分类下的关键词规则' : '给账单配好分类，按关键词自动归类'}
@@ -257,7 +312,7 @@ export function RulesClient() {
           /* 第二步：某分类下的规则列表 */
           <section>
             {/* 第一行：返回 + 添加规则 */}
-            <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="mb-2 flex w-full min-w-0 items-center justify-between gap-2">
               <button
                 type="button"
                 onClick={() => {
@@ -270,10 +325,7 @@ export function RulesClient() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setFormError('')
-                  setRuleDraft({ keyword: '', field: 'counterparty', priority: '100' })
-                }}
+                onClick={() => openCreateRule(selected.id)}
                 className="shrink-0 rounded-full bg-primary px-4 py-1.5 text-xs font-semibold text-white active:bg-primary/90"
               >
                 + 添加规则
@@ -310,13 +362,21 @@ export function RulesClient() {
             ) : (
               <ul className="flex flex-col gap-2">
                 {selectedRules.map((rule) => (
-                  <li key={rule.id} className="flex items-center gap-2 rounded-2xl border bg-card px-3 py-3">
+                  <li key={rule.id} className="flex min-w-0 items-center gap-2 rounded-2xl border bg-card px-3 py-3">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-base font-semibold">{rule.keyword}</p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         匹配 {FIELD_LABELS[rule.match_field] ?? rule.match_field} · 优先级 {rule.priority}
                       </p>
                     </div>
+                    <button
+                      type="button"
+                      aria-label={`编辑规则 ${rule.keyword}`}
+                      onClick={() => openEditRule(rule)}
+                      className="shrink-0 rounded-full px-3 py-2 text-base active:bg-muted"
+                    >
+                      ✏️
+                    </button>
                     <button
                       type="button"
                       aria-label={`删除规则 ${rule.keyword}`}
@@ -354,7 +414,7 @@ export function RulesClient() {
                   const children = childCategories(parent.id)
                   return (
                     <li key={parent.id} className="overflow-hidden rounded-2xl border bg-card">
-                      <div className="flex items-center gap-1 p-3">
+                      <div className="flex min-w-0 items-center gap-1 p-3">
                         <button
                           type="button"
                           onClick={() => setSelectedId(parent.id)}
@@ -411,7 +471,7 @@ export function RulesClient() {
                           {children.map((child) => (
                             <li
                               key={child.id}
-                              className="flex items-center gap-1 border-b px-3 py-2 last:border-b-0"
+                              className="flex min-w-0 items-center gap-1 border-b px-3 py-2 last:border-b-0"
                             >
                               <button
                                 type="button"
@@ -509,7 +569,7 @@ export function RulesClient() {
                     className={cn(
                       'rounded-xl border py-1.5 text-lg',
                       categoryDraft.emoji === emoji
-                        ? 'border-primary bg-primary/10'
+                        ? 'border-primary bg-orange-50'
                         : 'border-transparent bg-muted',
                     )}
                   >
@@ -543,7 +603,10 @@ export function RulesClient() {
       )}
 
       {ruleDraft && selected && (
-        <Modal title={`给「${selected.name}」添加规则`} onClose={() => setRuleDraft(null)}>
+        <Modal
+          title={editingRuleId ? '编辑规则' : `给「${selected.name}」添加规则`}
+          onClose={closeRuleDraft}
+        >
           <div className="flex flex-col gap-3">
             <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
               匹配关键词
@@ -571,7 +634,28 @@ export function RulesClient() {
               >
                 <option value="counterparty">交易对方</option>
                 <option value="commodity">商品说明</option>
+                <option value="trade_type">交易类型/分类</option>
                 <option value="all">全部</option>
+              </select>
+            </label>
+
+            <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+              所属分类
+              <select
+                value={ruleDraft.categoryId}
+                onChange={(event) =>
+                  setRuleDraft((prev) =>
+                    prev ? { ...prev, categoryId: event.target.value } : prev,
+                  )
+                }
+                className={inputClass}
+              >
+                {categories.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.parent_id ? '　↳ ' : ''}
+                    {item.emoji} {item.name}
+                  </option>
+                ))}
               </select>
             </label>
 
@@ -593,7 +677,7 @@ export function RulesClient() {
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => setRuleDraft(null)}
+                onClick={closeRuleDraft}
                 className="flex-1 rounded-xl bg-muted py-2 text-sm font-semibold"
               >
                 取消

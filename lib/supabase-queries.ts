@@ -4,7 +4,7 @@ import { isoDayOfWeek, shiftDate, streakEndingAt, todayStr } from '@/lib/dates'
 import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
 import { baseStarsForCheckin, STREAK_BONUS_STARS } from '@/lib/star-rules'
-import { type BillSource, type OdsBill, type StatBill } from '@/lib/bills'
+import { billFallbackKey, type BillSource, type OdsBill, type StatBill } from '@/lib/bills'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -702,6 +702,7 @@ export async function insertOdsBills(params: {
       merchant_no: row.merchantNo,
       remark: row.remark,
       raw_data: row.rawData,
+      category_id: row.categoryId ?? null,
       creator_id: creator.id,
       creator_name: creator.name,
     }))
@@ -743,6 +744,81 @@ export async function insertManualBill(params: {
   if (error) throw error
 }
 
+/**
+ * 导入去重：查询本家庭已存在的交易单号。
+ * 没有单号的老数据用「分钟级时间_金额_商品说明」兜底键一起比对。
+ */
+export async function fetchExistingBillKeys(params: {
+  tradeNos: string[]
+  fallbackKeys: string[]
+}): Promise<Set<string>> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const found = new Set<string>()
+  if (!familyId) return found
+
+  for (let index = 0; index < params.tradeNos.length; index += 200) {
+    const chunk = params.tradeNos.slice(index, index + 200)
+    const { data, error } = await supabase
+      .from('bill_ods')
+      .select('trade_no')
+      .eq('family_id', familyId)
+      .in('trade_no', chunk)
+    if (error) throw error
+    for (const row of data ?? []) {
+      if (row.trade_no) found.add(String(row.trade_no))
+    }
+  }
+
+  if (params.fallbackKeys.length > 0) {
+    const wanted = new Set(params.fallbackKeys)
+    const { data, error } = await supabase
+      .from('bill_ods')
+      .select('trade_time, amount, commodity')
+      .eq('family_id', familyId)
+      .is('trade_no', null)
+      .limit(5000)
+    if (error) throw error
+    for (const row of data ?? []) {
+      const key = billFallbackKey(
+        row.trade_time as string | null,
+        row.amount as number | null,
+        row.commodity as string | null,
+      )
+      if (wanted.has(key)) found.add(key)
+    }
+  }
+
+  return found
+}
+
+/** 手工记账防重：同家庭、同金额、同分类，且交易时间在同一个自然日（北京时间） */
+export async function findSimilarManualBill(params: {
+  amount: number
+  categoryId: string | null
+  /** YYYY-MM-DD（北京时间自然日） */
+  day: string
+}): Promise<boolean> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  if (!familyId) return false
+
+  let query = supabase
+    .from('bill_ods')
+    .select('id')
+    .eq('family_id', familyId)
+    .eq('amount', params.amount)
+    .gte('trade_time', `${params.day}T00:00:00+08:00`)
+    .lte('trade_time', `${params.day}T23:59:59.999+08:00`)
+  query = params.categoryId
+    ? query.eq('category_id', params.categoryId)
+    : query.is('category_id', null)
+
+  const { data, error } = await query.limit(1)
+  if (error) throw error
+  return (data ?? []).length > 0
+}
+
 /** 导入批次列表：只取轻量列，按 batch_id 聚合条数与最近时间 */
 export async function fetchOdsBatches(limit = 5000): Promise<OdsBatch[]> {
   const supabase = await requireSupabase()
@@ -775,6 +851,18 @@ export async function fetchOdsBatches(limit = 5000): Promise<OdsBatch[]> {
   return [...map.values()]
 }
 
+/** 撤销一次导入：按 batch_id 删除该批次全部记录，返回删除条数 */
+export async function deleteOdsBatch(batchId: string): Promise<number> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const { error, count } = await scoped(
+    supabase.from('bill_ods').delete({ count: 'exact' }).eq('batch_id', batchId),
+    familyId,
+  )
+  if (error) throw error
+  return count ?? 0
+}
+
 /** 账单明细（预览用，默认最近 200 条；可按批次过滤，时间倒序） */
 export async function fetchOdsBills(params?: {
   batchId?: string
@@ -800,6 +888,41 @@ export async function fetchOdsBills(params?: {
 
   if (error) throw error
   return (data ?? []) as OdsBillRow[]
+}
+
+/** 明细列表：分页取当前视图的全部账单，保证前端筛选不受 200 条窗口限制 */
+export async function fetchOdsBillsAll(params?: {
+  batchId?: string
+  maxRows?: number
+}): Promise<OdsBillRow[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const pageSize = 500
+  const maxRows = params?.maxRows ?? 5000
+  const rows: OdsBillRow[] = []
+
+  for (let from = 0; from < maxRows; from += pageSize) {
+    let query = scoped(
+      supabase
+        .from('bill_ods')
+        .select(
+          'id, source, batch_id, category_id, trade_time, trade_type, counterparty, account, commodity, direction, amount, pay_method, status, trade_no, merchant_no, remark, raw_data, creator_id, creator_name, created_at',
+        ),
+      familyId,
+    )
+    if (params?.batchId === '(无批次号)') query = query.is('batch_id', null)
+    else if (params?.batchId) query = query.eq('batch_id', params.batchId)
+
+    const { data, error } = await query
+      .order('trade_time', { ascending: false, nullsFirst: false })
+      .order('id', { ascending: true })
+      .range(from, from + pageSize - 1)
+
+    if (error) throw error
+    rows.push(...((data ?? []) as OdsBillRow[]))
+    if (!data || data.length < pageSize) break
+  }
+  return rows
 }
 
 /** 统计页：只取聚合需要的列，分页取全量（最多 2 万条） */
@@ -828,16 +951,21 @@ export async function fetchBillsForStats(): Promise<StatBill[]> {
 
 /** 未分类账单（只取匹配需要的列）：分页取全量，避免默认 1000 行上限 */
 export async function fetchUnclassifiedBills(): Promise<
-  { id: string; counterparty: string | null; commodity: string | null }[]
+  { id: string; counterparty: string | null; commodity: string | null; trade_type: string | null }[]
 > {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const pageSize = 500
-  const rows: { id: string; counterparty: string | null; commodity: string | null }[] = []
+  const rows: {
+    id: string
+    counterparty: string | null
+    commodity: string | null
+    trade_type: string | null
+  }[] = []
 
   for (let from = 0; from < 20000; from += pageSize) {
     const { data, error } = await scoped(
-      supabase.from('bill_ods').select('id, counterparty, commodity'),
+      supabase.from('bill_ods').select('id, counterparty, commodity, trade_type'),
       familyId,
     )
       .is('category_id', null)
@@ -846,15 +974,70 @@ export async function fetchUnclassifiedBills(): Promise<
 
     if (error) throw error
     rows.push(
-      ...((data ?? []) as { id: string; counterparty: string | null; commodity: string | null }[]),
+      ...((data ?? []) as {
+        id: string
+        counterparty: string | null
+        commodity: string | null
+        trade_type: string | null
+      }[]),
     )
     if (!data || data.length < pageSize) break
   }
   return rows
 }
 
-/** 按分类批量回写 category_id，单次 200 条 */
-export async function updateBillsCategory(ids: string[], categoryId: string): Promise<number> {
+/** 全量账单（重新分类用）：id + 参与匹配的字段 + 现有分类，分页取全量 */
+export async function fetchBillsForRecategorize(): Promise<
+  {
+    id: string
+    counterparty: string | null
+    commodity: string | null
+    trade_type: string | null
+    category_id: string | null
+  }[]
+> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const pageSize = 500
+  const rows: {
+    id: string
+    counterparty: string | null
+    commodity: string | null
+    trade_type: string | null
+    category_id: string | null
+  }[] = []
+
+  for (let from = 0; from < 20000; from += pageSize) {
+    const { data, error } = await scoped(
+      supabase
+        .from('bill_ods')
+        .select('id, counterparty, commodity, trade_type, category_id'),
+      familyId,
+    )
+      .order('trade_time', { ascending: false, nullsFirst: false })
+      .order('id', { ascending: true })
+      .range(from, from + pageSize - 1)
+
+    if (error) throw error
+    rows.push(
+      ...((data ?? []) as {
+        id: string
+        counterparty: string | null
+        commodity: string | null
+        trade_type: string | null
+        category_id: string | null
+      }[]),
+    )
+    if (!data || data.length < pageSize) break
+  }
+  return rows
+}
+
+/** 按分类批量回写 category_id（null 表示清空为未分类） */
+export async function updateBillsCategory(
+  ids: string[],
+  categoryId: string | null,
+): Promise<number> {
   if (ids.length === 0) return 0
   const supabase = await requireSupabase()
   const chunkSize = 200
@@ -894,8 +1077,8 @@ export type BillCategory = {
   parent_id: string | null
 }
 
-/** 规则匹配字段：交易对方 / 商品说明 / 全部 */
-export type BillRuleField = 'counterparty' | 'commodity' | 'all'
+/** 规则匹配字段：交易对方 / 商品说明 / 交易类型或分类 / 全部 */
+export type BillRuleField = 'counterparty' | 'commodity' | 'trade_type' | 'all'
 
 export type BillCategoryRule = {
   id: string
@@ -997,6 +1180,27 @@ export async function deleteBillRule(id: string) {
   const supabase = await requireSupabase()
   const { error } = await supabase.from('bill_category_rules').delete().eq('id', id)
   if (error) throw error
+}
+
+/** 修改规则：可同时改关键词、匹配字段、优先级和所属分类 */
+export async function updateBillRule(
+  id: string,
+  params: { keyword: string; matchField: BillRuleField; priority: number; categoryId?: string },
+) {
+  const supabase = await requireSupabase()
+  const { data, error } = await supabase
+    .from('bill_category_rules')
+    .update({
+      keyword: params.keyword,
+      match_field: params.matchField,
+      priority: params.priority,
+      ...(params.categoryId ? { category_id: params.categoryId } : {}),
+    })
+    .eq('id', id)
+    .select('id, category_id, keyword, match_field, priority')
+    .single()
+  if (error) throw error
+  return data as BillCategoryRule
 }
 
 /**

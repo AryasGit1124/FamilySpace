@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { describeBillError } from '@/lib/bills'
-import { insertManualBill, type BillCategory } from '@/lib/supabase-queries'
+import { findSimilarManualBill, insertManualBill, type BillCategory } from '@/lib/supabase-queries'
 import { cn } from '@/lib/utils'
 
 /** 北京时间「YYYY-MM-DDTHH:mm」，不依赖设备时区 */
@@ -52,10 +52,28 @@ export function ManualBillSheet({
     setSaving(true)
     setError('')
     try {
+      const rounded = Math.round(value * 100) / 100
+      const description = commodity.trim() || null
+      // 防重：同一天、同金额、同分类已有记账时，仅提示不强制拦截
+      // 直接取表单里的日期字符串，避免设备时区换算导致跨天
+      const duplicated = await findSimilarManualBill({
+        amount: rounded,
+        categoryId: categoryId || null,
+        day: tradeTime.slice(0, 10),
+      })
+      if (duplicated) {
+        const categoryName =
+          categories.find((item) => item.id === categoryId)?.name ?? '未分类'
+        const confirmed = window.confirm(
+          `提示：今天在【${categoryName}】下已经有一笔 ¥${rounded} 的记账。是否仍要保存？`,
+        )
+        if (!confirmed) return
+      }
+
       await insertManualBill({
         direction,
-        amount: Math.round(value * 100) / 100,
-        commodity: commodity.trim() || null,
+        amount: rounded,
+        commodity: description,
         categoryId: categoryId || null,
         tradeTime: time.toISOString(),
       })

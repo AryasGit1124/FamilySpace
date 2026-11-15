@@ -14,6 +14,7 @@ import {
   YAxis,
 } from 'recharts'
 import { PageHeader } from '@/components/page-header'
+import { ChevronDown } from 'lucide-react'
 import {
   aggregateCategoryShare,
   aggregateTimeBuckets,
@@ -62,12 +63,41 @@ function bucketLabel(key: string, granularity: Granularity): string {
 
 const money = (value: number) => `¥${value.toFixed(2)}`
 
+/** 金额筛选类型 */
+type AmountFilterType = 'all' | 'nonzero' | 'gte100' | 'gte500' | 'custom'
+
+const AMOUNT_OPTIONS: { value: AmountFilterType; label: string; hint?: string }[] = [
+  { value: 'all', label: '全部金额' },
+  { value: 'nonzero', label: '金额 ≠ 0', hint: '排除 0 元记录' },
+  { value: 'gte100', label: '金额 ≥ 100', hint: '大额消费' },
+  { value: 'gte500', label: '金额 ≥ 500', hint: '超大额消费' },
+  { value: 'custom', label: '自定义范围', hint: '填写最小 / 最大金额' },
+]
+
+const amountLabel = (type: AmountFilterType, min: string, max: string) => {
+  if (type === 'nonzero') return '金额 ≠ 0'
+  if (type === 'gte100') return '金额 ≥ 100'
+  if (type === 'gte500') return '金额 ≥ 500'
+  if (type === 'custom') {
+    const low = min.trim() === '' ? '0' : min.trim()
+    const high = max.trim() === '' ? '不限' : max.trim()
+    return `金额 ${low}-${high}`
+  }
+  return '金额'
+}
+
+
 export function StatsClient() {
   const [bills, setBills] = useState<StatBill[]>([])
   const [categories, setCategories] = useState<StatCategory[]>([])
   const [granularity, setGranularity] = useState<Granularity>('month')
   const [categoryId, setCategoryId] = useState('')
   const [creatorFilter, setCreatorFilter] = useState('')
+  /** 金额筛选（独立于时间维度 / 分类 / 登记人，切换后仍保留） */
+  const [amountType, setAmountType] = useState<AmountFilterType>('all')
+  const [minAmount, setMinAmount] = useState('')
+  const [maxAmount, setMaxAmount] = useState('')
+  const [amountOpen, setAmountOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -124,10 +154,28 @@ export function StatsClient() {
     return [...names].sort()
   }, [bills])
 
+  /** 金额筛选后的账单：后续所有统计与图表都基于它 */
+  const amountBills = useMemo(() => {
+    if (amountType === 'all') return creatorBills
+    const min = minAmount.trim() === '' ? null : Number(minAmount)
+    const max = maxAmount.trim() === '' ? null : Number(maxAmount)
+    return creatorBills.filter((bill) => {
+      const value = Number(bill.amount ?? 0)
+      if (amountType === 'nonzero' && value === 0) return false
+      if (amountType === 'gte100' && value < 100) return false
+      if (amountType === 'gte500' && value < 500) return false
+      if (amountType === 'custom') {
+        if (min !== null && !Number.isNaN(min) && value < min) return false
+        if (max !== null && !Number.isNaN(max) && value > max) return false
+      }
+      return true
+    })
+  }, [creatorBills, amountType, minAmount, maxAmount])
+
   /** 分类筛选后（选一级分类含全部子分类）的账单 */
   const scopedBills = useMemo(
-    () => filterBillsByCategory(creatorBills, categories, categoryId),
-    [creatorBills, categories, categoryId],
+    () => filterBillsByCategory(amountBills, categories, categoryId),
+    [amountBills, categories, categoryId],
   )
 
   /** 时间维度汇总：纵轴收入 / 支出 */
@@ -143,9 +191,9 @@ export function StatsClient() {
 
     const scopeId = selected.parent_id ?? selected.id
     const scopeIds = categorySubtreeIds(categories, scopeId)
-    const source = creatorBills.filter((bill) => !!bill.category_id && scopeIds.has(bill.category_id))
+    const source = amountBills.filter((bill) => !!bill.category_id && scopeIds.has(bill.category_id))
     return aggregateCategoryShare(source, categories, scopeId)
-  }, [creatorBills, categories, categoryById, categoryId, scopedBills])
+  }, [amountBills, categories, categoryById, categoryId, scopedBills])
 
   const chartData = useMemo(
     () =>
@@ -199,7 +247,7 @@ export function StatsClient() {
   )
 
   return (
-    <div className="min-h-[100dvh] pb-24">
+    <div className="min-h-[100dvh] w-full max-w-full overflow-x-hidden pb-24">
       <PageHeader
         title="数据统计"
         subtitle="按时间维度看收支，按分类看结构"
@@ -217,7 +265,7 @@ export function StatsClient() {
         }
       />
 
-      <div className="mx-auto flex w-full max-w-full flex-col gap-3 overflow-x-hidden px-4 pb-24 md:px-6">
+      <div className="mx-auto flex w-full max-w-full flex-col gap-3 overflow-x-hidden px-4 md:px-6">
         {error && (
           <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
             <span className="flex-1">{error}</span>
@@ -254,7 +302,7 @@ export function StatsClient() {
           <select
             value={categoryId}
             onChange={(event) => setCategoryId(event.target.value)}
-            className="min-w-[8rem] flex-1 rounded-full border bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary sm:flex-none"
+            className="min-w-0 max-w-full flex-1 rounded-full border bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary sm:flex-none"
           >
             <option value="">全部分类</option>
             {topCategories.map((parent) => (
@@ -276,7 +324,7 @@ export function StatsClient() {
             value={creatorFilter}
             onChange={(event) => setCreatorFilter(event.target.value)}
             aria-label="按登记人筛选"
-            className="min-w-[8rem] flex-1 rounded-full border bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary sm:flex-none"
+            className="min-w-0 max-w-full flex-1 rounded-full border bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary sm:flex-none"
           >
             <option value="">全部登记人</option>
             {creatorNames.map((name) => (
@@ -286,7 +334,21 @@ export function StatsClient() {
             ))}
           </select>
 
-          <div className="flex w-full items-center justify-between gap-2 rounded-xl bg-muted/60 px-3 py-2 text-xs sm:ml-auto sm:w-auto sm:bg-transparent sm:px-0 sm:py-0 sm:text-sm">
+          <button
+            type="button"
+            onClick={() => setAmountOpen(true)}
+            className={cn(
+              'flex shrink-0 items-center gap-1 rounded-full border px-3 py-2 text-sm font-medium transition-colors',
+              amountType !== 'all'
+                ? 'border-orange-300 bg-orange-50 text-orange-600'
+                : 'bg-white text-muted-foreground',
+            )}
+          >
+            <span>{amountLabel(amountType, minAmount, maxAmount)}</span>
+            <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
+          </button>
+
+          <div className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-muted/60 px-3 py-2 text-xs sm:ml-auto sm:w-auto sm:bg-transparent sm:px-0 sm:py-0 sm:text-sm">
             <span className="text-muted-foreground">
               收入 <span className="font-bold text-emerald-600">{money(totals.income)}</span>
             </span>
@@ -323,7 +385,7 @@ export function StatsClient() {
                     <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
                     <YAxis tick={{ fontSize: 11 }} width={56} />
                     <Tooltip
-                      formatter={(value: number) => money(Number(value))}
+                      formatter={(value) => money(Number(value ?? 0))}
                       labelStyle={{ fontSize: 12 }}
                       contentStyle={{ fontSize: 12, borderRadius: 12 }}
                     />
@@ -369,9 +431,9 @@ export function StatsClient() {
                         ))}
                       </Pie>
                       <Tooltip
-                        formatter={(value: number, name: string) => [
-                          `${money(Number(value))}（${totalExpense > 0 ? Math.round((Number(value) / totalExpense) * 100) : 0}%）`,
-                          name,
+                        formatter={(value, name) => [
+                          `${money(Number(value ?? 0))}（${totalExpense > 0 ? Math.round((Number(value) / totalExpense) * 100) : 0}%）`,
+                          String(name ?? ''),
                         ]}
                         contentStyle={{ fontSize: 12, borderRadius: 12 }}
                       />
@@ -396,7 +458,7 @@ export function StatsClient() {
 
         {/* 明细 / 汇总卡片流 */}
         <section>
-          <div className="mb-2 flex items-center gap-2">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
             <h2 className="text-base font-bold">
               {granularity === 'day' ? '交易明细' : granularity === 'month' ? '月度汇总' : '年度汇总'}
             </h2>
@@ -417,7 +479,7 @@ export function StatsClient() {
                   const category = bill.category_id ? categoryById.get(bill.category_id) : undefined
                   const source = sourceTag(bill.source)
                   return (
-                    <li key={bill.id} className="flex items-center gap-3 px-4 py-3">
+                    <li key={bill.id} className="flex min-w-0 items-center gap-3 px-4 py-3">
                       <span
                         className="flex size-10 shrink-0 items-center justify-center rounded-full bg-gray-100 text-lg"
                         aria-hidden="true"
@@ -477,8 +539,8 @@ export function StatsClient() {
             <ul className="grid w-full gap-2 md:grid-cols-2">
               {[...buckets].reverse().map((bucket) => (
                 <li key={bucket.key} className="w-full rounded-xl border bg-card p-3 shadow-sm">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-base font-semibold tabular-nums">{bucket.key}</span>
+                  <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                    <span className="min-w-0 truncate text-base font-semibold tabular-nums">{bucket.key}</span>
                     <span
                       className={cn(
                         'text-sm font-bold tabular-nums',
@@ -488,7 +550,7 @@ export function StatsClient() {
                       结余 {money(bucket.net)}
                     </span>
                   </div>
-                  <div className="mt-1 flex gap-4 text-xs">
+                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs">
                     <span className="text-emerald-600">收入 {money(bucket.income)}</span>
                     <span className="text-red-500">支出 {money(bucket.expense)}</span>
                   </div>
@@ -498,6 +560,100 @@ export function StatsClient() {
           )}
         </section>
       </div>
+
+      {amountOpen && (
+        <div
+          className="fixed inset-0 z-[80] flex items-end justify-center bg-black/40 sm:items-center sm:p-4"
+          role="presentation"
+          onClick={() => setAmountOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="stats-amount-filter-title"
+            className="w-full max-w-md rounded-t-3xl bg-white p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] shadow-xl sm:rounded-2xl sm:pb-4"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+              <h3 id="stats-amount-filter-title" className="truncate text-base font-bold">
+                金额筛选
+              </h3>
+              <button
+                type="button"
+                onClick={() => setAmountOpen(false)}
+                className="shrink-0 rounded-full px-2 py-1 text-sm text-muted-foreground active:bg-muted"
+              >
+                关闭
+              </button>
+            </div>
+
+            <ul className="divide-y divide-gray-100">
+              {AMOUNT_OPTIONS.map((option) => {
+                const active = amountType === option.value
+                return (
+                  <li key={option.value}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAmountType(option.value)
+                        if (option.value !== 'custom') setAmountOpen(false)
+                      }}
+                      className="flex w-full items-center justify-between gap-3 py-3.5 text-left"
+                    >
+                      <span className="min-w-0">
+                        <span
+                          className={cn(
+                            'block text-sm',
+                            active ? 'font-semibold text-orange-600' : 'text-gray-800',
+                          )}
+                        >
+                          {option.label}
+                        </span>
+                        {option.hint && (
+                          <span className="mt-0.5 block text-xs text-muted-foreground">
+                            {option.hint}
+                          </span>
+                        )}
+                      </span>
+                      {active && <span className="shrink-0 text-orange-600">✓</span>}
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+
+            {amountType === 'custom' && (
+              <div className="mt-3 flex items-center gap-2">
+                <input
+                  inputMode="decimal"
+                  value={minAmount}
+                  onChange={(event) => setMinAmount(event.target.value)}
+                  placeholder="最小金额"
+                  aria-label="最小金额"
+                  className="h-11 min-w-0 flex-1 rounded-lg border border-gray-200 px-3 text-sm outline-none focus:border-orange-300"
+                />
+                <span className="shrink-0 text-sm text-gray-400">—</span>
+                <input
+                  inputMode="decimal"
+                  value={maxAmount}
+                  onChange={(event) => setMaxAmount(event.target.value)}
+                  placeholder="最大金额"
+                  aria-label="最大金额"
+                  className="h-11 min-w-0 flex-1 rounded-lg border border-gray-200 px-3 text-sm outline-none focus:border-orange-300"
+                />
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setAmountOpen(false)}
+              className="mt-3 h-11 w-full rounded-xl bg-orange-50 text-sm font-semibold text-orange-600 active:bg-orange-100"
+            >
+              完成
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

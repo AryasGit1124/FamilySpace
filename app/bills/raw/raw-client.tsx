@@ -96,7 +96,7 @@ export function RawBillsClient({ batch }: { batch?: string }) {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-6rem)] flex-col overflow-hidden">
+    <div className="flex h-[calc(100dvh-6rem)] w-full max-w-full flex-col overflow-hidden">
       <header className="shrink-0 border-b bg-card px-4 py-3 md:px-6">
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-2">
           <Link
@@ -118,7 +118,7 @@ export function RawBillsClient({ batch }: { batch?: string }) {
               className={[
                 'shrink-0 rounded-full border px-3 py-1 text-xs font-medium transition-colors',
                 !batch
-                  ? 'border-primary bg-primary/10 text-primary'
+                  ? 'border-primary bg-orange-50 text-primary'
                   : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
               ].join(' ')}
             >
@@ -133,7 +133,7 @@ export function RawBillsClient({ batch }: { batch?: string }) {
                   className={[
                     'flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors',
                     isActive
-                      ? 'border-primary bg-primary/10 text-primary'
+                      ? 'border-primary bg-orange-50 text-primary'
                       : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
                   ].join(' ')}
                 >
@@ -147,7 +147,7 @@ export function RawBillsClient({ batch }: { batch?: string }) {
         )}
       </header>
 
-      <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col px-4 py-3 md:px-6">
+      <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col overflow-x-hidden px-4 py-3 md:px-6">
         {error && (
           <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
             <span className="flex-1">{error}</span>
@@ -173,7 +173,7 @@ export function RawBillsClient({ batch }: { batch?: string }) {
 
         {rows.length > 0 && (
           <div className="min-h-0 flex-1 overflow-auto rounded-2xl border bg-card">
-            <table className="w-full min-w-[42rem] border-collapse text-xs">
+            <table className="w-full min-w-full border-collapse text-xs">
               <thead className="sticky top-0 z-10 bg-muted">
                 <tr className="text-left text-muted-foreground">
                   <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">交易时间</th>
