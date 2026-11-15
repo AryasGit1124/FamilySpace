@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { PageHeader } from '@/components/page-header'
 import {
   bjDateTime,
-  buildRawRows,
+  buildOdsRows,
   describeBillError,
   findRawHeaderRow,
   isMissingBillTable,
@@ -14,7 +14,7 @@ import {
   readBillSheet,
   type BillSource,
 } from '@/lib/bills'
-import { fetchRawBatches, insertRawBills, type RawBatch } from '@/lib/supabase-queries'
+import { fetchOdsBatches, insertOdsBills, type OdsBatch } from '@/lib/supabase-queries'
 
 type Phase = 'idle' | 'parsing' | 'saving'
 
@@ -34,7 +34,7 @@ const SOURCE_META: Record<BillSource, { label: string; hint: string; className: 
 }
 
 /**
- * 家庭账单：把微信 / 支付宝导出文件原封不动搬进 bill_raw_data（ODS 原始层）。
+ * 家庭账单：把微信 / 支付宝导出文件映射到 bill_ods 的物理列，原始行另存 raw_data。
  * 这里只做「解析 → 组装 JSON → 分批入库」，不做金额清洗与统计。
  * 批次列表在浏览器端读取：线上服务端访问 Supabase 偶发 ECONNRESET。
  */
@@ -44,7 +44,7 @@ export function BillsClient() {
   const [message, setMessage] = useState('')
   const [percent, setPercent] = useState<number | null>(null)
   const [error, setError] = useState('')
-  const [batches, setBatches] = useState<RawBatch[]>([])
+  const [batches, setBatches] = useState<OdsBatch[]>([])
   const [listLoading, setListLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -54,13 +54,13 @@ export function BillsClient() {
     setListLoading(true)
     setLoadError('')
     try {
-      setBatches(await fetchRawBatches())
+      setBatches(await fetchOdsBatches())
     } catch (err) {
       const detail = describeBillError(err)
       console.error('[Bills] 读取导入批次失败:', detail, err)
       setLoadError(
         isMissingBillTable(err)
-          ? '原始账单表还没创建：请在 Supabase 执行 scripts/create-bill-raw-data.sql，然后刷新本页'
+          ? '账单表还没创建：请在 Supabase 执行 scripts/create-bill-ods.sql，然后刷新本页'
           : `读取导入批次失败：${detail}`,
       )
     } finally {
@@ -85,15 +85,15 @@ export function BillsClient() {
     try {
       const sheet = await readBillSheet(file, source)
       const headerIndex = findRawHeaderRow(sheet)
-      const rows = buildRawRows(sheet, headerIndex)
+      const rows = buildOdsRows(sheet, headerIndex, source)
       if (rows.length === 0) throw new Error('表头之后没有数据行，请确认文件是否完整')
 
       const batchId = newBatchId()
       setPhase('saving')
       setPercent(0)
-      setMessage(`已解析 ${rows.length} 条原始记录，正在保存…`)
+      setMessage(`已解析 ${rows.length} 条记录，正在保存…`)
 
-      await insertRawBills({
+      await insertOdsBills({
         source,
         batchId,
         rows,
@@ -107,7 +107,7 @@ export function BillsClient() {
 
       setMessage('')
       setPercent(null)
-      alert(`成功导入 ${rows.length} 条原始记录，批次号：${batchId}`)
+      alert(`成功导入 ${rows.length} 条记录，批次号：${batchId}`)
       router.push(`/bills/raw?batch=${encodeURIComponent(batchId)}`)
     } catch (err) {
       const detail = describeBillError(err)
@@ -116,7 +116,7 @@ export function BillsClient() {
       setMessage('')
       setPercent(null)
       if (isMissingBillTable(err)) {
-        setError('原始账单表还没创建：请在 Supabase 执行 scripts/create-bill-raw-data.sql，然后重试')
+        setError('账单表还没创建：请在 Supabase 执行 scripts/create-bill-ods.sql，然后重试')
       } else {
         setError(`${savedSoFar > 0 ? `已保存 ${savedSoFar} 条，之后` : ''}导入失败：${detail}`)
       }
@@ -207,8 +207,9 @@ export function BillsClient() {
           {error && <p className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</p>}
 
           <p className="rounded-xl bg-muted px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-            导入只做搬运：文件里有多少行，就原样存多少行，金额不做清洗、不计入收支统计。
-            每 100 条一批写入 <span className="font-mono">bill_raw_data</span>，并带批次号，方便整批撤回。
+            导入按物理列映射：交易时间、交易类型、对方、商品、收/支、金额、支付方式、状态、单号、备注，
+            整行原始数据同时存入 <span className="font-mono">raw_data</span>。
+            每 100 条一批写入 <span className="font-mono">bill_ods</span>，并带批次号，方便整批撤回。
           </p>
         </div>
 
@@ -246,7 +247,7 @@ export function BillsClient() {
                       {SOURCE_META[batch.source as BillSource]?.short ?? batch.source}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{batch.count} 条原始记录</p>
+                      <p className="truncate text-sm font-medium">{batch.count} 条记录</p>
                       <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
                         {batch.batchId}
                       </p>

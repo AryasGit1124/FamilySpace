@@ -4,10 +4,10 @@ import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
 import { bjDateTime, describeBillError, isMissingBillTable } from '@/lib/bills'
 import {
-  fetchRawBatches,
-  fetchRawRows,
-  type RawBatch,
-  type RawBillRow,
+  fetchOdsBatches,
+  fetchOdsBills,
+  type OdsBatch,
+  type OdsBillRow,
 } from '@/lib/supabase-queries'
 
 /** 预览条数上限 */
@@ -16,46 +16,29 @@ const PAGE_LIMIT = 200
 const sourceLabel = (source: string) =>
   source === 'wechat' ? '微信' : source === 'alipay' ? '支付宝' : source
 
-/** 单张原始数据卡片：字段动态，键值对逐条展示 */
-function RawCard({ row }: { row: RawBillRow }) {
-  const entries = Object.entries(row.raw_json ?? {})
-  return (
-    <article className="rounded-2xl border bg-card p-3 shadow-sm">
-      <header className="flex flex-wrap items-center gap-1.5">
-        <span
-          className={`rounded-full px-2 py-0.5 text-[10px] font-bold text-white ${
-            row.source === 'wechat' ? 'bg-emerald-500' : 'bg-sky-500'
-          }`}
-        >
-          {sourceLabel(row.source)}
-        </span>
-        <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
-          批次 {row.batch_id ?? '—'}
-        </span>
-        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-          第 {row.row_index ?? '—'} 行
-        </span>
-        <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
-          {row.created_at ? bjDateTime(row.created_at) : ''}
-        </span>
-      </header>
+/** 金额展示：收入绿色带 +，支出红色带 -，其他（不计收支）灰色 */
+function AmountCell({ row }: { row: OdsBillRow }) {
+  const direction = row.direction ?? ''
+  const isIncome = direction.includes('收')
+  const isExpense = direction.includes('支')
+  const className = isIncome
+    ? 'text-emerald-600'
+    : isExpense
+      ? 'text-red-500'
+      : 'text-muted-foreground'
+  const sign = isIncome ? '+' : isExpense ? '-' : ''
 
-      <dl className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
-        {entries.map(([key, value]) => (
-          <div key={key} className="flex min-w-0 gap-1.5 text-xs leading-relaxed">
-            <dt className="shrink-0 font-medium text-muted-foreground">【{key}】</dt>
-            <dd className="min-w-0 break-all">{value || '—'}</dd>
-          </div>
-        ))}
-      </dl>
-    </article>
+  return (
+    <td className={`whitespace-nowrap px-2.5 py-1.5 text-right font-medium tabular-nums ${className}`}>
+      {row.amount === null ? '—' : `${sign}¥${Number(row.amount).toFixed(2)}`}
+    </td>
   )
 }
 
-/** 原始数据预览：导入多少条就展示多少条，字段原样保留 */
+/** 账单明细预览：直接读 bill_ods 的物理列 */
 export function RawBillsClient({ batch }: { batch?: string }) {
-  const [batches, setBatches] = useState<RawBatch[]>([])
-  const [rows, setRows] = useState<RawBillRow[]>([])
+  const [batches, setBatches] = useState<OdsBatch[]>([])
+  const [rows, setRows] = useState<OdsBillRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -63,19 +46,19 @@ export function RawBillsClient({ batch }: { batch?: string }) {
     setLoading(true)
     setError('')
     try {
-      const [batchList, rawRows] = await Promise.all([
-        fetchRawBatches(),
-        fetchRawRows({ batchId: batch, limit: PAGE_LIMIT }),
+      const [batchList, billRows] = await Promise.all([
+        fetchOdsBatches(),
+        fetchOdsBills({ batchId: batch, limit: PAGE_LIMIT }),
       ])
       setBatches(batchList)
-      setRows(rawRows)
+      setRows(billRows)
     } catch (err) {
       const detail = describeBillError(err)
-      console.error('[RawBills] 读取原始数据失败:', detail, err)
+      console.error('[Bills] 读取账单失败:', detail, err)
       setError(
         isMissingBillTable(err)
-          ? '原始账单表还没创建：请在 Supabase 执行 scripts/create-bill-raw-data.sql'
-          : `读取原始数据失败：${detail}`,
+          ? '账单表还没创建：请在 Supabase 执行 scripts/create-bill-ods.sql'
+          : `读取账单失败：${detail}`,
       )
     } finally {
       setLoading(false)
@@ -96,7 +79,7 @@ export function RawBillsClient({ batch }: { batch?: string }) {
           >
             ← 返回导入
           </Link>
-          <h1 className="text-base font-bold md:text-lg">原始数据预览</h1>
+          <h1 className="text-base font-bold md:text-lg">账单明细</h1>
           <span className="text-xs text-muted-foreground">
             {rows.length > 0 ? `最近 ${rows.length} 条` : ''}
           </span>
@@ -153,7 +136,7 @@ export function RawBillsClient({ batch }: { batch?: string }) {
         )}
 
         {loading && (
-          <p className="flex-1 px-4 py-10 text-center text-sm text-muted-foreground">正在读取原始数据…</p>
+          <p className="flex-1 px-4 py-10 text-center text-sm text-muted-foreground">正在读取账单…</p>
         )}
 
         {!loading && !error && rows.length === 0 && (
@@ -163,16 +146,47 @@ export function RawBillsClient({ batch }: { batch?: string }) {
         )}
 
         {rows.length > 0 && (
-          <div className="grid min-h-0 flex-1 grid-cols-1 content-start gap-2 overflow-y-auto pb-1 lg:grid-cols-2">
-            {rows.map((row) => (
-              <RawCard key={row.id} row={row} />
-            ))}
+          <div className="min-h-0 flex-1 overflow-auto rounded-2xl border bg-card">
+            <table className="w-full min-w-[34rem] border-collapse text-xs">
+              <thead className="sticky top-0 z-10 bg-muted">
+                <tr className="text-left text-muted-foreground">
+                  <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">交易时间</th>
+                  <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">交易对方</th>
+                  <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">商品 / 说明</th>
+                  <th className="whitespace-nowrap border-b px-2.5 py-2 text-right font-semibold">
+                    金额
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.id} className="odd:bg-white even:bg-muted/30">
+                    <td className="whitespace-nowrap border-b px-2.5 py-1.5 tabular-nums">
+                      {row.trade_time ? bjDateTime(row.trade_time) : '—'}
+                    </td>
+                    <td
+                      title={row.counterparty ?? ''}
+                      className="max-w-[10rem] truncate border-b px-2.5 py-1.5"
+                    >
+                      {row.counterparty || '—'}
+                    </td>
+                    <td
+                      title={row.commodity ?? ''}
+                      className="max-w-[16rem] truncate border-b px-2.5 py-1.5"
+                    >
+                      {row.commodity || '—'}
+                    </td>
+                    <AmountCell row={row} />
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 
         {rows.length > 0 && (
           <p className="mt-2 shrink-0 text-[11px] text-muted-foreground">
-            按导入时间倒序，最多展示 {PAGE_LIMIT} 条；数据原样存储，未做任何清洗
+            按交易时间倒序，最多展示 {PAGE_LIMIT} 条；完整字段已存入 bill_ods，原始行保存在 raw_data
           </p>
         )}
       </div>

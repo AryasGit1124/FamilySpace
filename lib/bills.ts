@@ -1,42 +1,18 @@
 /**
- * 家庭账单解析：微信支付 / 支付宝导出的 .csv / .xls / .xlsx 流水文件。
+ * 家庭账单解析：微信支付 / 支付宝导出的账单文件（.csv / .xls / .xlsx）。
  *
- * 两家导出的文件结构差异很大，但都有一大段说明文字在前、真正的表头在后面，
- * 字段名（金额(元) / 金额、商品 / 商品说明）也不完全一样；微信新版导出的是 .xls。
- * 这里统一先转成二维数组再按表头取列，页面只管展示和入库。
+ * 两家导出都在前面放一大段说明文字，真正的表头在后面；字段名也不一样
+ * （金额(元) / 金额、商品 / 商品说明、交易单号 / 交易订单号）。
+ * 这里统一转成二维数组，再按表头把一行映射成 bill_ods 的物理列，原始行另存 raw_data。
  */
 import Papa from 'papaparse'
 
 export type BillSource = 'wechat' | 'alipay'
-export type BillDirection = 'income' | 'expense'
-
-export type ParsedBill = {
-  /** ISO 时间串，带 +08:00，避免服务器在 UTC 时区把日期算错天 */
-  occurredAt: string
-  source: BillSource
-  direction: BillDirection
-  amount: number
-  category: string
-  description: string
-}
-
-export type ParseResult = {
-  rows: ParsedBill[]
-  /** 解析到但被过滤掉的行数（收/支 为空或不计收支） */
-  skipped: number
-  /** 表格数据总行数（不含表头与说明） */
-  total: number
-}
 
 /** 两家导出文件的说明行数：解析时按表头关键字定位，找不到才用这个兜底 */
 const FALLBACK_SKIP_LINES: Record<BillSource, number> = {
   wechat: 16,
   alipay: 24,
-}
-
-/** 字段名归一：去 BOM、去首尾空白与引号 */
-function normalizeKey(key: string): string {
-  return key.replace(/^\uFEFF/, '').replace(/^["']|["']$/g, '').trim()
 }
 
 const pad2 = (value: number) => String(value).padStart(2, '0')
@@ -106,16 +82,6 @@ export function parseAmount(raw: string): number | null {
   return Math.abs(value)
 }
 
-/** 收/支 → income / expense；空与「不计收支」返回 null（这类多为转账、还款，不参与统计） */
-export function parseDirection(raw: string): BillDirection | null {
-  const text = raw.trim()
-  if (!text) return null
-  if (text.includes('不计')) return null
-  if (text.includes('收')) return 'income'
-  if (text.includes('支')) return 'expense'
-  return null
-}
-
 /** 「2026-01-05 12:30:45」→「2026-01-05T12:30:45+08:00」 */
 export function parseOccurredAt(raw: string): string | null {
   const text = raw.trim().replace(/"/g, '')
@@ -142,58 +108,6 @@ export function parseOccurredAt(raw: string): string | null {
   return `${y}-${pad2(Number(m))}-${pad2(Number(d))}T${pad2(Number(hh))}:${mm}:${ss ?? '00'}+08:00`
 }
 
-/** 在二维数组里找表头行：含「交易时间」优先，其次「交易类型 / 交易分类」 */
-function findHeaderRow(sheet: unknown[][], source: BillSource): number {
-  const limit = Math.min(sheet.length, 60)
-  for (let i = 0; i < limit; i += 1) {
-    const cells = (sheet[i] ?? []).map(cellText)
-    if (cells.some((cell) => cell.includes('交易时间'))) return i
-  }
-  for (let i = 0; i < limit; i += 1) {
-    const cells = (sheet[i] ?? []).map(cellText)
-    if (cells.some((cell) => cell.includes('交易类型') || cell.includes('交易分类'))) return i
-  }
-  return Math.min(FALLBACK_SKIP_LINES[source], Math.max(0, sheet.length - 1))
-}
-
-/** 二维表格 → 标准账单行（表头之后的每一行都是数据） */
-export function parseBillSheet(sheet: unknown[][], source: BillSource): ParseResult {
-  const headerRowIndex = findHeaderRow(sheet, source)
-  const header = (sheet[headerRowIndex] ?? []).map((cell) => normalizeKey(cellText(cell)))
-
-  const amountKeys = source === 'wechat' ? ['金额(元)', '金额'] : ['金额']
-  const categoryKeys = source === 'wechat' ? ['交易类型'] : ['交易分类']
-  const descKeys = source === 'wechat' ? ['商品'] : ['商品说明', '商品']
-
-  const rows: ParsedBill[] = []
-  let skipped = 0
-  let total = 0
-
-  for (const row of sheet.slice(headerRowIndex + 1)) {
-    if (!Array.isArray(row) || row.length === 0) continue
-    const occurredAt = parseOccurredAt(pickTime(header, row))
-    const amount = parseAmount(pickCell(header, row, amountKeys))
-    const direction = parseDirection(pickCell(header, row, ['收/支', '收/支出']))
-    // 表尾的统计行 / 空行：没有时间且没有金额时直接忽略，不计入总数
-    if (!occurredAt && amount === null) continue
-    total += 1
-    if (!occurredAt || amount === null || amount === 0 || !direction) {
-      skipped += 1
-      continue
-    }
-    rows.push({
-      occurredAt,
-      source,
-      direction,
-      amount,
-      category: pickCell(header, row, categoryKeys).slice(0, 50),
-      description: pickCell(header, row, descKeys).slice(0, 200),
-    })
-  }
-
-  return { rows, skipped, total }
-}
-
 /** 在说明文字里找真正表头所在行（按整行文本判断，避免引号内容打乱 CSV 解析） */
 function findHeaderLine(lines: string[], source: BillSource): number {
   const limit = Math.min(lines.length, 60)
@@ -212,7 +126,7 @@ function findHeaderLine(lines: string[], source: BillSource): number {
   return Math.min(FALLBACK_SKIP_LINES[source], Math.max(0, lines.length - 1))
 }
 
-/** 文件字节 → 文本：优先 UTF-8，出现替换符再按 GBK（微信早期导出）解一次 */
+/** 文件字节 → 文本：优先 UTF-8，出现替换符再按 GBK（支付宝导出）解一次 */
 export function decodeBillText(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
   // UTF-16LE BOM（部分 Windows 导出）
@@ -251,7 +165,7 @@ async function readWorkbookSheet(buffer: ArrayBuffer): Promise<unknown[][]> {
 }
 
 /**
- * 按后缀把文件读成二维数组（不判断表头、不清洗，交给调用方）。
+ * 按后缀把文件读成二维数组（不判断表头）。
  * 微信新版导出是 .xlsx；也有把 CSV 内容直接命名为 .xls 的文件，
  * 所以 xlsx 解析失败时回退成文本 CSV 再试一次。
  */
@@ -276,9 +190,6 @@ export async function readBillSheet(
   throw new Error('只支持 .csv / .xls / .xlsx 格式的账单文件')
 }
 
-/** ODS 原始行：rowIndex 为文件中的行号（从 1 开始），data 为「表头 → 单元格」 */
-export type RawRow = { rowIndex: number; data: Record<string, string> }
-
 /** 找表头行：第一列文本包含「交易时间」 */
 export function findRawHeaderRow(sheet: unknown[][]): number {
   const limit = Math.min(sheet.length, 60)
@@ -289,25 +200,68 @@ export function findRawHeaderRow(sheet: unknown[][]): number {
   throw new Error('没找到表头行：文件第一列没有「交易时间」，请确认是微信 / 支付宝官方导出的账单')
 }
 
-/** 表头 + 数据行 → 原始 JSON 行；字段名保持文件原样，单元格一律转文本 */
-export function buildRawRows(sheet: unknown[][], headerIndex: number): RawRow[] {
-  const header = (sheet[headerIndex] ?? []).map((cell) => cellText(cell).replace(/^\uFEFF/, '').trim())
-  const rows: RawRow[] = []
+/** 一行对应 bill_ods 的物理列；rawData 保留该行完整原始 JSON */
+export type OdsBill = {
+  tradeTime: string | null
+  tradeType: string | null
+  counterparty: string | null
+  account: string | null
+  commodity: string | null
+  direction: string | null
+  amount: number | null
+  payMethod: string | null
+  status: string | null
+  tradeNo: string | null
+  merchantNo: string | null
+  remark: string | null
+  rawData: Record<string, string>
+}
 
+/** 该行所有单元格 →「表头 → 文本」，键名保持文件原样 */
+function rowToRaw(header: string[], row: unknown[]): Record<string, string> {
+  const data: Record<string, string> = {}
+  header.forEach((key, index) => {
+    const value = cellText(row[index]).trim()
+    // 空表头且空值（支付宝行尾多余的逗号）直接忽略
+    if (!key && !value) return
+    data[key || `列${index + 1}`] = value
+  })
+  return data
+}
+
+/** 表头 + 数据行 → bill_ods 记录（不清洗、不丢行，金额只去掉 ¥ 与千分位） */
+export function buildOdsRows(
+  sheet: unknown[][],
+  headerIndex: number,
+  source: BillSource,
+): OdsBill[] {
+  const header = (sheet[headerIndex] ?? []).map((cell) =>
+    cellText(cell).replace(/^\uFEFF/, '').trim(),
+  )
+  const amountKeys = source === 'wechat' ? ['金额(元)', '金额'] : ['金额']
+
+  const rows: OdsBill[] = []
   for (let i = headerIndex + 1; i < sheet.length; i += 1) {
     const row = sheet[i]
     if (!Array.isArray(row)) continue
-    const values = row.map((cell) => cellText(cell).trim())
-    if (values.every((value) => !value)) continue
+    if (row.every((cell) => !cellText(cell).trim())) continue
+    const text = (candidates: string[]) => pickCell(header, row, candidates) || null
 
-    const data: Record<string, string> = {}
-    header.forEach((key, index) => {
-      const value = values[index] ?? ''
-      // 空表头且空值（支付宝行尾多余的逗号）直接忽略
-      if (!key && !value) return
-      data[key || `列${index + 1}`] = value
+    rows.push({
+      tradeTime: parseOccurredAt(pickTime(header, row)),
+      tradeType: text(['交易类型', '交易分类']),
+      counterparty: text(['交易对方']),
+      account: text(['对方账号']),
+      commodity: text(['商品说明', '商品']),
+      direction: text(['收/支', '收/支出']),
+      amount: parseAmount(pickCell(header, row, amountKeys)),
+      payMethod: text(['支付方式', '收/付款方式']),
+      status: text(['当前状态', '交易状态']),
+      tradeNo: text(['交易单号', '交易订单号']),
+      merchantNo: text(['商户单号', '商家订单号']),
+      remark: text(['备注']),
+      rawData: rowToRaw(header, row),
     })
-    rows.push({ rowIndex: i + 1, data })
   }
   return rows
 }
@@ -321,47 +275,6 @@ export function newBatchId(): string {
   return `${stamp}-${Math.random().toString(36).slice(2, 6)}`
 }
 
-/** 解析 CSV 文本（微信 / 支付宝都有导出 .csv 的情况） */
-export function parseBillCsv(text: string, source: BillSource): ParseResult {
-  return parseBillSheet(readCsvSheet(text, source), source)
-}
-
-/** 解析 .xls / .xlsx */
-export async function parseBillWorkbook(
-  buffer: ArrayBuffer,
-  source: BillSource,
-): Promise<ParseResult> {
-  return parseBillSheet(await readWorkbookSheet(buffer), source)
-}
-
-/** 统一入口：先读成二维数组，再按表头清洗（清洗逻辑留给后续 ETL 使用） */
-export async function parseBillFile(
-  file: { name: string; arrayBuffer: () => Promise<ArrayBuffer> },
-  source: BillSource,
-): Promise<ParseResult> {
-  return parseBillSheet(await readBillSheet(file, source), source)
-}
-
-/** 汇总用的最小行结构：数据库行与解析结果都能直接传入 */
-export type BillRecord = {
-  occurred_at: string
-  direction: BillDirection
-  amount: number | string
-  category: string | null
-}
-
-/**
- * ISO 时间 → 北京时间日期 key（YYYY-MM-DD）。
- * 数据库 timestamptz 返回的是 UTC（如 2026-01-05T04:30:45+00:00），
- * 直接切字符串会把凌晨的账单算到前一天 / 上一月，这里统一换算到 +08:00。
- */
-export function bjDayKey(iso: string): string {
-  const time = Date.parse(iso)
-  if (Number.isNaN(time)) return iso.slice(0, 10)
-  const d = new Date(time + 8 * 60 * 60 * 1000)
-  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`
-}
-
 /** ISO 时间 → 北京时间「YYYY-MM-DD HH:mm」 */
 export function bjDateTime(iso: string): string {
   const time = Date.parse(iso)
@@ -370,11 +283,6 @@ export function bjDateTime(iso: string): string {
   return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(
     d.getUTCHours(),
   )}:${pad2(d.getUTCMinutes())}`
-}
-
-/** 分类名兜底：空分类统一归入「未分类」 */
-export function categoryOf(row: Pick<BillRecord, 'category'>): string {
-  return row.category?.trim() || '未分类'
 }
 
 /**
@@ -406,34 +314,4 @@ export function isMissingBillTable(err: unknown): boolean {
     text.includes('42p01') ||
     text.includes('pgrst205')
   )
-}
-
-/** 区间（prefix 为 YYYY-MM 或 YYYY）内的收入 / 支出合计 */
-export function sumBills(rows: readonly BillRecord[], prefix: string) {
-  let income = 0
-  let expense = 0
-  for (const row of rows) {
-    if (!bjDayKey(row.occurred_at).startsWith(prefix)) continue
-    const amount = Number(row.amount) || 0
-    if (row.direction === 'income') income += amount
-    else if (row.direction === 'expense') expense += amount
-  }
-  return { income, expense }
-}
-
-/** 区间内支出按分类聚合，按金额降序；percent 为占该区间总支出的比例 */
-export function expenseByCategory(rows: readonly BillRecord[], prefix: string) {
-  const map = new Map<string, number>()
-  let total = 0
-  for (const row of rows) {
-    if (!bjDayKey(row.occurred_at).startsWith(prefix)) continue
-    if (row.direction !== 'expense') continue
-    const amount = Number(row.amount) || 0
-    const key = categoryOf(row)
-    map.set(key, (map.get(key) ?? 0) + amount)
-    total += amount
-  }
-  return [...map.entries()]
-    .map(([name, amount]) => ({ name, amount, percent: total > 0 ? (amount / total) * 100 : 0 }))
-    .sort((a, b) => b.amount - a.amount)
 }

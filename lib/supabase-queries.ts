@@ -4,7 +4,7 @@ import { isoDayOfWeek, shiftDate, streakEndingAt, todayStr } from '@/lib/dates'
 import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
 import { baseStarsForCheckin, STREAK_BONUS_STARS } from '@/lib/star-rules'
-import { type BillSource, type RawRow } from '@/lib/bills'
+import { type BillSource, type OdsBill } from '@/lib/bills'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -612,20 +612,31 @@ export async function rejectExchangeRequest(requestId: string): Promise<void> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 家庭账单（ODS 原始层）
-// family_bills 已废弃，导入只落 bill_raw_data，清洗与统计后续再做
+// 家庭账单（bill_ods：真实物理列 + raw_data 原始 JSON）
+// family_bills / bill_raw_data 已废弃，导入直接映射到 bill_ods
 // ──────────────────────────────────────────────────────────────────────────────
 
-export type RawBillRow = {
+export type OdsBillRow = {
   id: string
   source: string
   batch_id: string | null
-  row_index: number | null
-  raw_json: Record<string, string>
+  trade_time: string | null
+  trade_type: string | null
+  counterparty: string | null
+  account: string | null
+  commodity: string | null
+  direction: string | null
+  amount: number | null
+  pay_method: string | null
+  status: string | null
+  trade_no: string | null
+  merchant_no: string | null
+  remark: string | null
+  raw_data: Record<string, string> | null
   created_at: string
 }
 
-export type RawBatch = {
+export type OdsBatch = {
   batchId: string
   source: string
   count: number
@@ -633,13 +644,13 @@ export type RawBatch = {
 }
 
 /** 导入时每批写入的行数 */
-const RAW_BILL_BATCH_SIZE = 100
+const ODS_BILL_BATCH_SIZE = 100
 
-/** 原始账单入库：只做搬运，不改任何字段；每 100 条一批 */
-export async function insertRawBills(params: {
+/** 账单入库：按物理列写入，raw_data 保留整行原始 JSON；每 100 条一批 */
+export async function insertOdsBills(params: {
   source: BillSource
   batchId: string
-  rows: RawRow[]
+  rows: OdsBill[]
   onProgress?: (saved: number, total: number) => void
 }): Promise<number> {
   const { source, batchId, rows, onProgress } = params
@@ -649,15 +660,26 @@ export async function insertRawBills(params: {
   if (!familyId) throw new Error('没有找到当前家庭，请重新登录后再导入')
 
   let saved = 0
-  for (let start = 0; start < rows.length; start += RAW_BILL_BATCH_SIZE) {
-    const batch = rows.slice(start, start + RAW_BILL_BATCH_SIZE).map((row) => ({
+  for (let start = 0; start < rows.length; start += ODS_BILL_BATCH_SIZE) {
+    const batch = rows.slice(start, start + ODS_BILL_BATCH_SIZE).map((row) => ({
       family_id: familyId,
       source,
       batch_id: batchId,
-      row_index: row.rowIndex,
-      raw_json: row.data,
+      trade_time: row.tradeTime,
+      trade_type: row.tradeType,
+      counterparty: row.counterparty,
+      account: row.account,
+      commodity: row.commodity,
+      direction: row.direction,
+      amount: row.amount,
+      pay_method: row.payMethod,
+      status: row.status,
+      trade_no: row.tradeNo,
+      merchant_no: row.merchantNo,
+      remark: row.remark,
+      raw_data: row.rawData,
     }))
-    const { error } = await supabase.from('bill_raw_data').insert(batch)
+    const { error } = await supabase.from('bill_ods').insert(batch)
     if (error) throw error
     saved += batch.length
     onProgress?.(saved, rows.length)
@@ -666,11 +688,11 @@ export async function insertRawBills(params: {
 }
 
 /** 导入批次列表：只取轻量列，按 batch_id 聚合条数与最近时间 */
-export async function fetchRawBatches(limit = 5000): Promise<RawBatch[]> {
+export async function fetchOdsBatches(limit = 5000): Promise<OdsBatch[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const { data, error } = await scoped(
-    supabase.from('bill_raw_data').select('batch_id, source, created_at'),
+    supabase.from('bill_ods').select('batch_id, source, created_at'),
     familyId,
   )
     .order('created_at', { ascending: false })
@@ -678,7 +700,7 @@ export async function fetchRawBatches(limit = 5000): Promise<RawBatch[]> {
 
   if (error) throw error
 
-  const map = new Map<string, RawBatch>()
+  const map = new Map<string, OdsBatch>()
   for (const row of data ?? []) {
     const batchId = (row.batch_id as string | null) ?? '(无批次号)'
     const existing = map.get(batchId)
@@ -697,26 +719,29 @@ export async function fetchRawBatches(limit = 5000): Promise<RawBatch[]> {
   return [...map.values()]
 }
 
-/** 原始记录（预览用，默认最近 200 条；可按批次过滤，批次内按文件行号升序） */
-export async function fetchRawRows(params?: {
+/** 账单明细（预览用，默认最近 200 条；可按批次过滤，时间倒序） */
+export async function fetchOdsBills(params?: {
   batchId?: string
   limit?: number
-}): Promise<RawBillRow[]> {
+}): Promise<OdsBillRow[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   let query = scoped(
-    supabase.from('bill_raw_data').select('id, source, batch_id, row_index, raw_json, created_at'),
+    supabase
+      .from('bill_ods')
+      .select(
+        'id, source, batch_id, trade_time, trade_type, counterparty, account, commodity, direction, amount, pay_method, status, trade_no, merchant_no, remark, raw_data, created_at',
+      ),
     familyId,
   )
   if (params?.batchId) query = query.eq('batch_id', params.batchId)
 
   const { data, error } = await query
-    .order('created_at', { ascending: false })
-    .order('row_index', { ascending: true })
+    .order('trade_time', { ascending: false, nullsFirst: false })
     .limit(params?.limit ?? 200)
 
   if (error) throw error
-  return (data ?? []) as RawBillRow[]
+  return (data ?? []) as OdsBillRow[]
 }
 
 /**
