@@ -126,7 +126,7 @@ export function BillsClient({
         setError(
           result.total === 0
             ? '这个文件里没读到账单数据，请确认是微信 / 支付宝官方导出的 .csv / .xls / .xlsx 文件'
-            : `共 ${result.total} 条记录，但没有可统计的收/支记录（转账、还款会被过滤）`,
+            : `共 ${result.total} 条记录，但没有可统计的收/支记录（不计收支、0 元记录会被过滤）`,
         )
         return
       }
@@ -148,7 +148,7 @@ export function BillsClient({
       setPercent(null)
       alert(
         `导入成功：${result.rows.length} 条记录已保存${
-          result.skipped > 0 ? `（另有 ${result.skipped} 条不计收支已过滤）` : ''
+          result.skipped > 0 ? `（另有 ${result.skipped} 条未计入收支：不计收支 / 0 元）` : ''
         }`,
       )
       router.refresh()

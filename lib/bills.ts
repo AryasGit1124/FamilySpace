@@ -76,10 +76,16 @@ function columnIndex(header: string[], candidates: string[]): number {
   return -1
 }
 
+/** 占位符统一视为空：微信/支付宝大量用「/」「-」表示无内容 */
+function cleanPlaceholder(value: string): string {
+  const text = value.trim()
+  return text === '/' || text === '-' || text === '—' ? '' : text
+}
+
 /** 按候选列名取单元格文本 */
 function pickCell(header: string[], row: unknown[], candidates: string[]): string {
   const index = columnIndex(header, candidates)
-  return index >= 0 ? cellText(row[index]).trim() : ''
+  return index >= 0 ? cleanPlaceholder(cellText(row[index])) : ''
 }
 
 /** 交易时间列：可能是字符串、Date，也可能是 Excel 序列号 */
@@ -110,12 +116,21 @@ export function parseDirection(raw: string): BillDirection | null {
   return null
 }
 
-/** 「2026-01-05 12:30:45」→ 「2026-01-05T12:30:45+08:00」 */
+/** 「2026-01-05 12:30:45」→「2026-01-05T12:30:45+08:00」 */
 export function parseOccurredAt(raw: string): string | null {
   const text = raw.trim().replace(/"/g, '')
   if (!text) return null
   // 支付宝偶尔会带日期前缀单引号，如 '2026-01-05 12:30:45'
   const cleaned = text.replace(/^'/, '')
+
+  // 微信新版 .xlsx 的时间是带时区的 ISO（如 2026-11-15T02:58:18.000Z），
+  // 直接按北京时间解析会整体差 8 小时，这里交给 Date 处理时区
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/i.test(cleaned)) {
+    const time = Date.parse(cleaned)
+    if (!Number.isNaN(time)) return new Date(time).toISOString()
+    return null
+  }
+
   const match = cleaned.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/)
   if (!match) {
     const dateOnly = cleaned.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/)
