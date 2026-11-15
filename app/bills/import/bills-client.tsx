@@ -195,7 +195,7 @@ export function BillsClient() {
         action={
           <div className="flex shrink-0 items-center gap-1.5">
             <Link
-              href="/bills/settings"
+              href="/bills/rules"
               className="rounded-full bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200"
             >
               分类规则

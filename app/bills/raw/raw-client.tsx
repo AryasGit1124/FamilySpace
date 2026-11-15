@@ -100,7 +100,7 @@ export function RawBillsClient({ batch }: { batch?: string }) {
       <header className="shrink-0 border-b bg-card px-4 py-3 md:px-6">
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-2">
           <Link
-            href="/bills"
+            href="/bills/import"
             className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-200"
           >
             ← 返回导入

@@ -1,17 +1,22 @@
 'use client'
 
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import {
   Baby,
   BarChart3,
   Camera,
+  ChevronDown,
   ClipboardCheck,
   Home,
+  Inbox,
   Library,
   LogOut,
   Package,
+  PieChart,
   Settings,
+  SlidersHorizontal,
   UploadCloud,
   Users,
   Wallet,
@@ -29,7 +34,16 @@ const MENU_ITEMS: MenuItem[] = [
   { href: '/parent/approvals', label: '审核中心', icon: ClipboardCheck },
   { href: '/growth', label: '成长档案', icon: Camera },
   { href: '/stats', label: '学习统计', icon: BarChart3 },
-  { href: '/bills', label: '家庭账单', icon: Wallet },
+]
+
+/** 家庭账单子菜单：导入 → 规则 → 统计 */
+const BILL_ITEMS: MenuItem[] = [
+  { href: '/bills/import', label: '账单导入', icon: Inbox },
+  { href: '/bills/rules', label: '规则定义', icon: SlidersHorizontal },
+  { href: '/bills/stats', label: '数据统计', icon: PieChart },
+]
+
+const TAIL_ITEMS: MenuItem[] = [
   { href: '/upload', label: '上传资料', icon: UploadCloud },
   { href: '/library', label: '资料库', icon: Library },
   { href: '/settings', label: '设置', icon: Settings },
@@ -42,6 +56,14 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
   const { signOut, profile, setViewAsChild } = useAuth()
   /** 待审核打卡数量：侧边栏「打卡审核」红点 */
   const [pendingCount, setPendingCount] = useState(0)
+  const pathname = usePathname()
+  const billsActive = pathname.startsWith('/bills')
+  /** 家庭账单子菜单：进入账单相关页面时自动展开 */
+  const [billsOpen, setBillsOpen] = useState(billsActive)
+
+  useEffect(() => {
+    if (billsActive) setBillsOpen(true)
+  }, [billsActive])
 
   const loadPendingCount = useCallback(async () => {
     try {
@@ -64,6 +86,31 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
     window.addEventListener('checkins-changed', onChange)
     return () => window.removeEventListener('checkins-changed', onChange)
   }, [loadPendingCount])
+
+  const renderItem = (item: MenuItem) => {
+    const Icon = item.icon
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        onClick={onClose}
+        className={cn(
+          'flex items-center rounded-xl font-medium transition-colors hover:bg-muted active:bg-muted/80',
+          item.sub
+            ? 'ml-8 gap-3 px-3 py-3 text-sm text-muted-foreground'
+            : 'gap-4 px-4 py-4 text-base',
+        )}
+      >
+        <Icon className={item.sub ? 'size-5 text-primary' : 'size-7 text-primary'} aria-hidden="true" />
+        {item.label}
+        {item.href === '/parent/approvals' && pendingCount > 0 && (
+          <span className="ml-auto flex min-w-6 items-center justify-center rounded-full bg-red-500 px-2 py-0.5 text-xs font-bold text-white">
+            {pendingCount > 99 ? '99+' : pendingCount}
+          </span>
+        )}
+      </Link>
+    )
+  }
 
   return (
     <>
@@ -94,30 +141,53 @@ export function SideMenu({ isOpen, onClose }: { isOpen: boolean; onClose: () => 
           )}
         </div>
         <nav className="flex flex-col gap-1 p-3" aria-label="主菜单">
-          {MENU_ITEMS.map((item) => {
-            const Icon = item.icon
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={onClose}
-                className={cn(
-                  'flex items-center rounded-xl font-medium transition-colors hover:bg-muted active:bg-muted/80',
-                  item.sub
-                    ? 'ml-8 gap-3 px-3 py-3 text-sm text-muted-foreground'
-                    : 'gap-4 px-4 py-4 text-base',
-                )}
-              >
-                <Icon className={item.sub ? 'size-5 text-primary' : 'size-7 text-primary'} aria-hidden="true" />
-                {item.label}
-                {item.href === '/parent/approvals' && pendingCount > 0 && (
-                  <span className="ml-auto flex min-w-6 items-center justify-center rounded-full bg-red-500 px-2 py-0.5 text-xs font-bold text-white">
-                    {pendingCount > 99 ? '99+' : pendingCount}
-                  </span>
-                )}
-              </Link>
-            )
-          })}
+          {MENU_ITEMS.map(renderItem)}
+
+          {/* 家庭账单：可展开子菜单（导入 / 规则 / 统计） */}
+          <button
+            type="button"
+            onClick={() => setBillsOpen((prev) => !prev)}
+            aria-expanded={billsOpen}
+            className={cn(
+              'flex items-center gap-4 rounded-xl px-4 py-4 text-base font-medium transition-colors hover:bg-muted active:bg-muted/80',
+              billsActive && 'bg-primary/5 text-primary',
+            )}
+          >
+            <Wallet className="size-7 text-primary" aria-hidden="true" />
+            家庭账单
+            <ChevronDown
+              className={cn(
+                'ml-auto size-5 text-muted-foreground transition-transform',
+                billsOpen && 'rotate-180',
+              )}
+              aria-hidden="true"
+            />
+          </button>
+
+          {billsOpen && (
+            <div className="flex flex-col gap-1">
+              {BILL_ITEMS.map((item) => {
+                const Icon = item.icon
+                const active = pathname === item.href
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={onClose}
+                    className={cn(
+                      'ml-8 flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-colors hover:bg-muted active:bg-muted/80',
+                      active ? 'bg-primary/10 text-primary' : 'text-muted-foreground',
+                    )}
+                  >
+                    <Icon className="size-5 text-primary" aria-hidden="true" />
+                    {item.label}
+                  </Link>
+                )
+              })}
+            </div>
+          )}
+
+          {TAIL_ITEMS.map(renderItem)}
           <button
             type="button"
             onClick={() => {

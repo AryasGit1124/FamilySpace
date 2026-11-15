@@ -72,7 +72,7 @@ const inputClass =
   'w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:border-primary'
 
 /** 分类与规则配置 */
-export function SettingsClient() {
+export function RulesClient() {
   const [categories, setCategories] = useState<BillCategory[]>([])
   const [rules, setRules] = useState<BillCategoryRule[]>([])
   const [selectedId, setSelectedId] = useState('')
@@ -207,7 +207,7 @@ export function SettingsClient() {
       <PageHeader
         title="分类与规则"
         subtitle="给账单配好分类，按关键词自动归类"
-        backHref="/bills"
+        backHref="/bills/import"
         backLabel="返回账单"
         action={
           <button
