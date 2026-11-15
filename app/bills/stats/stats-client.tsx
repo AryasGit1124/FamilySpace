@@ -216,7 +216,7 @@ export function StatsClient() {
         }
       />
 
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-3 px-4 md:px-6">
+      <div className="mx-auto flex w-full max-w-full flex-col gap-3 overflow-x-hidden px-4 md:px-6">
         {error && (
           <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
             <span className="flex-1">{error}</span>
@@ -230,9 +230,9 @@ export function StatsClient() {
           </div>
         )}
 
-        {/* 筛选区 */}
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <div className="flex rounded-full bg-muted p-0.5">
+        {/* 筛选区：窄屏自动换行，胶囊不挤压 */}
+        <div className="flex w-full flex-wrap items-center gap-2">
+          <div className="flex shrink-0 rounded-full bg-muted p-0.5">
             {GRANULARITIES.map((item) => (
               <button
                 key={item.value}
@@ -253,7 +253,7 @@ export function StatsClient() {
           <select
             value={categoryId}
             onChange={(event) => setCategoryId(event.target.value)}
-            className="min-w-0 flex-1 rounded-full border bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary sm:flex-none"
+            className="min-w-[8rem] flex-1 rounded-full border bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary sm:flex-none"
           >
             <option value="">全部分类</option>
             {topCategories.map((parent) => (
@@ -275,7 +275,7 @@ export function StatsClient() {
             value={creatorFilter}
             onChange={(event) => setCreatorFilter(event.target.value)}
             aria-label="按登记人筛选"
-            className="rounded-full border bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary"
+            className="min-w-[8rem] flex-1 rounded-full border bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary sm:flex-none"
           >
             <option value="">全部登记人</option>
             {creatorNames.map((name) => (
@@ -306,16 +306,16 @@ export function StatsClient() {
           </div>
         </div>
 
-        {/* 图表区 */}
-        <div className="grid gap-3 md:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
-          <section className="rounded-2xl border bg-card p-3">
+        {/* 图表区：父级显式 w-full / min-w-0，ResponsiveContainer 才能测到真实宽度 */}
+        <div className="grid w-full gap-3 md:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+          <section className="w-full min-w-0 rounded-2xl border bg-card p-3 shadow-sm">
             <h2 className="mb-1 text-sm font-bold">收入 / 支出</h2>
             {loading ? (
               <p className="py-16 text-center text-sm text-muted-foreground">正在读取…</p>
             ) : chartData.length === 0 ? (
               <p className="py-16 text-center text-sm text-muted-foreground">这个范围内没有数据</p>
             ) : (
-              <div className="h-64 w-full">
+              <div className="h-64 w-full min-w-0">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -342,7 +342,7 @@ export function StatsClient() {
             </div>
           </section>
 
-          <section className="rounded-2xl border bg-card p-3">
+          <section className="w-full min-w-0 rounded-2xl border bg-card p-3 shadow-sm">
             <h2 className="mb-1 text-sm font-bold">支出分类占比</h2>
             {loading ? (
               <p className="py-16 text-center text-sm text-muted-foreground">正在读取…</p>
@@ -352,7 +352,7 @@ export function StatsClient() {
               </p>
             ) : (
               <>
-                <div className="h-56 w-full">
+                <div className="h-56 w-full min-w-0">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
@@ -406,15 +406,15 @@ export function StatsClient() {
 
           {granularity === 'day' ? (
             dayRows.length === 0 ? (
-              <p className="rounded-2xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+              <p className="w-full rounded-2xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">
                 没有符合筛选条件的交易
               </p>
             ) : (
-              <ul className="grid gap-2 md:grid-cols-2">
+              <ul className="grid w-full gap-2 md:grid-cols-2">
                 {dayRows.map((bill) => {
                   const direction = billDirectionOf(bill.direction)
                   return (
-                    <li key={bill.id} className="rounded-2xl border bg-card p-3">
+                    <li key={bill.id} className="w-full rounded-xl border bg-card p-3 shadow-sm">
                       <div className="flex items-start gap-3">
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-base font-semibold leading-snug">
@@ -456,13 +456,13 @@ export function StatsClient() {
               </ul>
             )
           ) : buckets.length === 0 ? (
-            <p className="rounded-2xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+            <p className="w-full rounded-2xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">
               没有符合筛选条件的数据
             </p>
           ) : (
-            <ul className="grid gap-2 md:grid-cols-2">
+            <ul className="grid w-full gap-2 md:grid-cols-2">
               {[...buckets].reverse().map((bucket) => (
-                <li key={bucket.key} className="rounded-2xl border bg-card p-3">
+                <li key={bucket.key} className="w-full rounded-xl border bg-card p-3 shadow-sm">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-base font-semibold tabular-nums">{bucket.key}</span>
                     <span

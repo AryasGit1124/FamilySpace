@@ -82,7 +82,7 @@ function BillCard({
   const category = row.category_id ? categories.find((item) => item.id === row.category_id) : undefined
 
   return (
-    <li className="rounded-2xl border bg-card p-3">
+    <li className="w-full rounded-xl border bg-card p-3 shadow-sm">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <p className="truncate text-base font-semibold leading-snug">
@@ -123,7 +123,7 @@ function BillCard({
             <select
               value=""
               onChange={(event) => onAssign(row.id, event.target.value)}
-              className="rounded-full border border-dashed border-amber-400 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700"
+              className="min-h-9 rounded-full border border-dashed border-amber-400 bg-amber-50 px-3 py-1.5 text-[13px] font-medium text-amber-700"
             >
               <option value="">待分类</option>
               {categories.map((item) => (
@@ -368,7 +368,7 @@ export function BillsClient() {
         }
       />
 
-      <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
+      <div className="mx-auto w-full max-w-full overflow-x-hidden px-4 md:px-6">
         {loadError && (
           <div className="mb-3 flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
             <span className="flex-1">{loadError}</span>
@@ -383,7 +383,7 @@ export function BillsClient() {
         )}
 
         {/* 上传区：紧凑双列白色按钮，给明细留出首屏空间 */}
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid w-full grid-cols-2 gap-3">
           {(Object.keys(SOURCE_META) as BillSource[]).map((source) => {
             const meta = SOURCE_META[source]
             const Icon = meta.icon
@@ -421,7 +421,7 @@ export function BillsClient() {
           type="button"
           disabled={busy || cleaning}
           onClick={() => void runRules()}
-          className="mt-2 flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-4 text-sm font-semibold text-primary transition-colors active:bg-primary/10 disabled:opacity-60"
+          className="mt-2 flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-sky-50 px-3 text-sm font-semibold text-sky-700 transition-colors active:bg-sky-100 disabled:opacity-60"
         >
           <Wand2 className="size-4 shrink-0" aria-hidden="true" />
           {cleaning ? '正在应用规则…' : '一键应用规则自动分类'}
@@ -458,7 +458,7 @@ export function BillsClient() {
           </header>
 
           {batches.length > 0 && (
-            <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-2">
+            <div className="flex w-full gap-1.5 overflow-x-auto pb-2">
               <button
                 type="button"
                 onClick={() => void changeBatch('')}
@@ -499,7 +499,7 @@ export function BillsClient() {
                 : '这个批次里没有数据'}
             </p>
           ) : (
-            <ul className="grid gap-2 md:grid-cols-2">
+            <ul className="grid w-full gap-2 md:grid-cols-2">
               {rows.map((row) => (
                 <BillCard
                   key={row.id}
