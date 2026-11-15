@@ -215,25 +215,14 @@ export function RulesClient() {
   }
 
   return (
-    <div className="min-h-[100dvh] pb-24">
+    <div className="min-h-[100dvh]">
       <PageHeader
-        title={selected ? `${selected.emoji} ${selected.name}` : '分类与规则'}
+        title="分类与规则"
         subtitle={selected ? '这个分类下的关键词规则' : '给账单配好分类，按关键词自动归类'}
-        backHref={selected ? undefined : '/bills/import'}
+        backHref="/bills/import"
         backLabel="返回账单"
         action={
-          selected ? (
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedId('')
-                setFormError('')
-              }}
-              className="shrink-0 rounded-full bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 active:bg-slate-200"
-            >
-              ← 分类列表
-            </button>
-          ) : (
+          selected ? undefined : (
             <button
               type="button"
               onClick={() => {
@@ -248,7 +237,7 @@ export function RulesClient() {
         }
       />
 
-      <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
+      <div className="mx-auto w-full max-w-full overflow-x-hidden px-4 pb-24">
         {error && (
           <div className="mb-3 flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
             <span className="flex-1">{error}</span>
@@ -267,29 +256,46 @@ export function RulesClient() {
         ) : selected ? (
           /* 第二步：某分类下的规则列表 */
           <section>
-            <div className="mb-2 flex items-center gap-2">
-              <h2 className="text-sm font-bold">归类规则</h2>
-              <span className="text-xs text-muted-foreground">{selectedRules.length} 条</span>
+            {/* 第一行：返回 + 添加规则 */}
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedId('')
+                  setFormError('')
+                }}
+                className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 active:bg-slate-200"
+              >
+                ← 返回
+              </button>
               <button
                 type="button"
                 onClick={() => {
                   setFormError('')
                   setRuleDraft({ keyword: '', field: 'counterparty', priority: '100' })
                 }}
-                className="ml-auto rounded-full bg-primary px-4 py-1.5 text-sm font-semibold text-white active:bg-primary/90"
+                className="shrink-0 rounded-full bg-primary px-4 py-1.5 text-xs font-semibold text-white active:bg-primary/90"
               >
                 + 添加规则
               </button>
             </div>
 
+            {/* 第二行：当前分类标题 + 规则数量 */}
+            <div className="mb-2 min-w-0">
+              <h2 className="truncate text-lg font-bold">
+                {selected.emoji} {selected.name}
+              </h2>
+              <p className="text-xs text-muted-foreground">{selectedRules.length} 条规则</p>
+            </div>
+
             {childCategories(selected.id).length > 0 && (
-              <div className="-mx-4 mb-2 flex gap-1.5 overflow-x-auto px-4">
+              <div className="mb-2 flex flex-wrap gap-2">
                 {childCategories(selected.id).map((child) => (
                   <button
                     key={child.id}
                     type="button"
                     onClick={() => setSelectedId(child.id)}
-                    className="shrink-0 rounded-full border bg-white px-3 py-1.5 text-xs font-medium text-slate-600"
+                    className="max-w-full truncate rounded-full border bg-white px-3 py-1.5 text-xs font-medium text-slate-600"
                   >
                     {child.emoji} {child.name}
                   </button>
@@ -298,7 +304,7 @@ export function RulesClient() {
             )}
 
             {selectedRules.length === 0 ? (
-              <p className="rounded-2xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+              <p className="whitespace-normal break-words rounded-xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">
                 还没有规则，添加「盒马」「山姆」这类关键词试试
               </p>
             ) : (
@@ -339,7 +345,7 @@ export function RulesClient() {
             </div>
 
             {categories.length === 0 ? (
-              <p className="rounded-2xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+              <p className="whitespace-normal break-words rounded-xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">
                 还没有分类，点右上角「+ 新增分类」创建一个吧
               </p>
             ) : (

@@ -89,7 +89,7 @@ function BillRow({
   const shortTime = stamp ? `${Number(stamp.slice(5, 7))}月${Number(stamp.slice(8, 10))}日 ${stamp.slice(11)}` : '—'
 
   return (
-    <li className="flex items-center gap-3 bg-white px-4 py-3">
+    <li className="flex w-full items-center gap-3 bg-white py-3">
       <span
         className="flex size-10 shrink-0 items-center justify-center rounded-full bg-gray-100 text-lg"
         aria-hidden="true"
@@ -406,9 +406,9 @@ export function BillsClient() {
         }
       />
 
-      <div className="mx-auto w-full max-w-full overflow-x-hidden">
+      <div className="mx-auto w-full max-w-full overflow-x-hidden px-4 pb-24">
         {loadError && (
-          <div className="mx-4 mb-2 flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
+          <div className="mb-2 flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700">
             <span className="flex-1">{loadError}</span>
             <button
               type="button"
@@ -420,33 +420,35 @@ export function BillsClient() {
           </div>
         )}
 
-        {/* 工具栏：导入 + 规则，普通小按钮，不再占据首屏 */}
-        <div className="flex w-full flex-wrap items-center gap-2 px-4 pb-2 pt-1">
-          {(Object.keys(SOURCE_META) as BillSource[]).map((source) => {
-            const meta = SOURCE_META[source]
-            const Icon = meta.icon
-            return (
-              <button
-                key={source}
-                type="button"
-                disabled={busy}
-                title={meta.hint}
-                onClick={() => {
-                  pendingSource.current = source
-                  inputRef.current?.click()
-                }}
-                className="flex h-9 items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 transition-colors active:bg-gray-50 disabled:opacity-60"
-              >
-                <Icon className={`size-4 shrink-0 ${meta.iconClass}`} aria-hidden="true" />
-                {meta.label}
-              </button>
-            )
-          })}
+        {/* 工具栏：两个导入按钮并排，规则按钮通栏 */}
+        <div className="w-full pb-2 pt-1">
+          <div className="grid w-full grid-cols-2 gap-3">
+            {(Object.keys(SOURCE_META) as BillSource[]).map((source) => {
+              const meta = SOURCE_META[source]
+              const Icon = meta.icon
+              return (
+                <button
+                  key={source}
+                  type="button"
+                  disabled={busy}
+                  title={meta.hint}
+                  onClick={() => {
+                    pendingSource.current = source
+                    inputRef.current?.click()
+                  }}
+                  className="flex h-10 min-w-0 items-center justify-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 text-xs font-semibold text-gray-700 transition-colors active:bg-gray-50 disabled:opacity-60"
+                >
+                  <Icon className={`size-4 shrink-0 ${meta.iconClass}`} aria-hidden="true" />
+                  <span className="truncate">{meta.label}</span>
+                </button>
+              )
+            })}
+          </div>
           <button
             type="button"
             disabled={busy || cleaning}
             onClick={() => void runRules()}
-            className="ml-auto flex h-9 items-center gap-1.5 rounded-md bg-sky-50 px-3 text-xs font-semibold text-sky-700 transition-colors active:bg-sky-100 disabled:opacity-60"
+            className="mt-2 flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-sky-50 px-3 text-xs font-semibold text-sky-700 transition-colors active:bg-sky-100 disabled:opacity-60"
           >
             <Wand2 className="size-3.5 shrink-0" aria-hidden="true" />
             {cleaning ? '正在应用规则…' : '一键应用规则'}
@@ -465,7 +467,7 @@ export function BillsClient() {
         />
 
         {(busy || cleaning) && (
-          <div className="mx-4 mb-2 rounded-lg border border-gray-100 bg-white px-3 py-2">
+          <div className="mb-2 rounded-lg border border-gray-100 bg-white px-3 py-2">
             <p className="text-xs font-medium">{message || '正在处理…'}</p>
             <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-gray-100">
               {percent === null ? (
@@ -481,12 +483,12 @@ export function BillsClient() {
         )}
 
         {error && (
-          <p className="mx-4 mb-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
+          <p className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>
         )}
 
         {/* 明细：微信账单式极简列表 */}
         <section className="mt-1">
-          <header className="flex items-center gap-2 px-4 pb-2">
+          <header className="flex items-center gap-2 pb-2">
             <h2 className="text-base font-bold">账单明细</h2>
             <span className="text-xs text-muted-foreground">
               {selectedBatch ? '本批次' : '最近'} {rows.length} 条
@@ -497,7 +499,7 @@ export function BillsClient() {
           </header>
 
           {batches.length > 0 && (
-            <div className="flex w-full gap-1.5 overflow-x-auto px-4 pb-2">
+            <div className="flex w-full gap-1.5 overflow-x-auto pb-2">
               <button
                 type="button"
                 onClick={() => void changeBatch('')}
@@ -530,7 +532,7 @@ export function BillsClient() {
           )}
 
           {rows.length > 0 && (
-            <div className="sticky top-16 z-20 flex items-center justify-between border-b border-gray-100 bg-gray-50/95 px-4 py-2 text-xs backdrop-blur">
+            <div className="sticky top-16 z-20 flex items-center justify-between gap-2 border-b border-gray-100 bg-gray-50/95 py-2 text-xs backdrop-blur">
               <span className="font-semibold text-gray-700">{summary.month}</span>
               <span className="tabular-nums text-gray-500">
                 支出 <span className="font-semibold text-gray-900">{money(summary.expense)}</span>
@@ -562,13 +564,13 @@ export function BillsClient() {
           )}
 
           {rows.length > 0 && (
-            <p className="px-4 py-2 text-xs text-muted-foreground">
+            <p className="py-2 text-xs text-muted-foreground">
               按交易时间倒序，最多展示 {PAGE_LIMIT} 条；「待分类」可手动指定分类。
             </p>
           )}
         </section>
 
-        <p className="mx-4 mt-3 rounded-lg bg-gray-50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+        <p className="mt-3 rounded-lg bg-gray-50 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
           导入按物理列映射：交易时间、交易类型、对方、商品、收/支、金额、支付方式、状态、单号、备注，
           整行原始数据同时存入 raw_data；每 100 条一批写入 bill_ods。
         </p>
@@ -579,7 +581,7 @@ export function BillsClient() {
         type="button"
         onClick={() => setManualOpen(true)}
         aria-label="记一笔"
-        className="fixed bottom-20 right-4 z-50 flex h-16 w-16 items-center justify-center rounded-full bg-blue-600 text-3xl font-light text-white shadow-lg active:bg-blue-700"
+        className="fixed bottom-6 right-4 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-blue-600 text-2xl font-light text-white shadow-lg active:bg-blue-700 md:bottom-8 md:right-8"
       >
         <span aria-hidden="true">＋</span>
       </button>

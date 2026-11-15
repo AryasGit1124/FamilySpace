@@ -217,7 +217,7 @@ export function StatsClient() {
         }
       />
 
-      <div className="mx-auto flex w-full max-w-full flex-col gap-3 overflow-x-hidden px-4 md:px-6">
+      <div className="mx-auto flex w-full max-w-full flex-col gap-3 overflow-x-hidden px-4 pb-24 md:px-6">
         {error && (
           <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
             <span className="flex-1">{error}</span>
@@ -316,7 +316,7 @@ export function StatsClient() {
             ) : chartData.length === 0 ? (
               <p className="py-16 text-center text-sm text-muted-foreground">这个范围内没有数据</p>
             ) : (
-              <div className="h-64 w-full min-w-0">
+              <div className="relative h-64 w-full overflow-hidden">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -353,7 +353,7 @@ export function StatsClient() {
               </p>
             ) : (
               <>
-                <div className="h-56 w-full min-w-0">
+                <div className="relative h-64 w-full overflow-hidden">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
