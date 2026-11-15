@@ -8,7 +8,7 @@ import {
   bjDayKey,
   categoryOf,
   expenseByCategory,
-  parseBillCsv,
+  parseBillFile,
   sumBills,
   type BillSource,
 } from '@/lib/bills'
@@ -24,12 +24,12 @@ const ALL = '__all__'
 const SOURCE_META: Record<BillSource, { label: string; hint: string; className: string }> = {
   wechat: {
     label: '导入微信账单',
-    hint: '微信 → 我 → 服务 → 钱包 → 账单 → 常见问题 → 下载账单',
+    hint: '微信 → 我 → 服务 → 钱包 → 账单 → 常见问题 → 下载账单（.xls / .csv）',
     className: 'bg-emerald-500 hover:bg-emerald-600',
   },
   alipay: {
     label: '导入支付宝账单',
-    hint: '支付宝 → 我的 → 账单 → 右上角… → 开具交易流水证明',
+    hint: '支付宝 → 我的 → 账单 → 右上角… → 开具交易流水证明（.csv / .xlsx）',
     className: 'bg-sky-500 hover:bg-sky-600',
   },
 }
@@ -110,24 +110,13 @@ export function BillsClient({ bills }: { bills: BillRow[] }) {
     setPercent(null)
     setMessage('正在解析文件…')
     try {
-      const buffer = await file.arrayBuffer()
-      // 微信/支付宝导出有时是 GBK，用 UTF-8 解出替换符时再按 GBK 解一次
-      let text = new TextDecoder('utf-8').decode(buffer)
-      if (text.includes('\uFFFD')) {
-        try {
-          text = new TextDecoder('gbk').decode(buffer)
-        } catch {
-          // 浏览器不支持 gbk 时保留 UTF-8 结果
-        }
-      }
-
-      const result = parseBillCsv(text, source)
+      const result = await parseBillFile(file, source)
       if (result.rows.length === 0) {
         setPhase('idle')
         setMessage('')
         setError(
           result.total === 0
-            ? '这个文件里没读到账单数据，请确认是官方导出的 CSV'
+            ? '这个文件里没读到账单数据，请确认是微信 / 支付宝官方导出的 .csv / .xls / .xlsx 文件'
             : `共 ${result.total} 条记录，但没有可统计的收/支记录（转账、还款会被过滤）`,
         )
         return
@@ -219,7 +208,7 @@ export function BillsClient({ bills }: { bills: BillRow[] }) {
                   inputRefs.current[source] = el
                 }}
                 type="file"
-                accept=".csv,text/csv"
+                accept=".csv,.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
                 className="hidden"
                 onChange={(event) => {
                   const file = event.target.files?.[0]

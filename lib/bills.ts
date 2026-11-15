@@ -1,9 +1,9 @@
 /**
- * 家庭账单 CSV 解析：微信支付 / 支付宝导出的流水文件。
+ * 家庭账单解析：微信支付 / 支付宝导出的 .csv / .xls / .xlsx 流水文件。
  *
- * 两家的 CSV 结构差异很大，但都有一大段说明文字在前、真正的表头在后面，
- * 而且字段名（金额(元) / 金额、商品 / 商品说明）也不完全一样。
- * 这里统一解析成 ParsedBill，页面只管展示和入库。
+ * 两家导出的文件结构差异很大，但都有一大段说明文字在前、真正的表头在后面，
+ * 字段名（金额(元) / 金额、商品 / 商品说明）也不完全一样；微信新版导出的是 .xls。
+ * 这里统一先转成二维数组再按表头取列，页面只管展示和入库。
  */
 import Papa from 'papaparse'
 
@@ -39,18 +39,56 @@ function normalizeKey(key: string): string {
   return key.replace(/^\uFEFF/, '').replace(/^["']|["']$/g, '').trim()
 }
 
-/** 按候选名在行里找值：先精确匹配，再前缀匹配（兼容「金额(元)」「金额（元）」） */
-function pick(row: Record<string, string>, candidates: string[]): string {
-  const entries = Object.entries(row).map(([key, value]) => [normalizeKey(key), value ?? ''] as const)
+const pad2 = (value: number) => String(value).padStart(2, '0')
+
+/** 单元格 → 文本；xlsx 的日期单元格（cellDates）用本地时间还原成原表格里的写法 */
+function cellText(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (value instanceof Date) {
+    // Excel 序列号精度有限，08:59:59.999 这类误差四舍五入到整秒
+    const d = new Date(Math.round(value.getTime() / 1000) * 1000)
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(
+      d.getHours(),
+    )}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+  }
+  return String(value)
+}
+
+/** Excel 日期序列号（如 46027.5）→「2026-01-05 12:00:00」；序列号本身不含时区，用 UTC 读回原样 */
+const EXCEL_EPOCH_MS = Date.UTC(1899, 11, 30)
+function excelSerialText(serial: number): string {
+  const d = new Date(EXCEL_EPOCH_MS + Math.round(serial * 86400 * 1000))
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(
+    d.getUTCHours(),
+  )}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`
+}
+
+/** 按候选列名找列下标：先精确匹配，再前缀匹配（兼容「金额(元)」「金额（元）」） */
+function columnIndex(header: string[], candidates: string[]): number {
   for (const candidate of candidates) {
-    const hit = entries.find(([key]) => key === candidate)
-    if (hit) return String(hit[1]).trim()
+    const index = header.findIndex((key) => key === candidate)
+    if (index >= 0) return index
   }
   for (const candidate of candidates) {
-    const hit = entries.find(([key]) => key.startsWith(candidate))
-    if (hit) return String(hit[1]).trim()
+    const index = header.findIndex((key) => key.startsWith(candidate))
+    if (index >= 0) return index
   }
-  return ''
+  return -1
+}
+
+/** 按候选列名取单元格文本 */
+function pickCell(header: string[], row: unknown[], candidates: string[]): string {
+  const index = columnIndex(header, candidates)
+  return index >= 0 ? cellText(row[index]).trim() : ''
+}
+
+/** 交易时间列：可能是字符串、Date，也可能是 Excel 序列号 */
+function pickTime(header: string[], row: unknown[]): string {
+  const index = columnIndex(header, ['交易时间'])
+  if (index < 0) return ''
+  const raw = row[index]
+  if (typeof raw === 'number') return excelSerialText(raw)
+  return cellText(raw).trim()
 }
 
 /** 「¥1,234.00」→ 1234；无法解析返回 null */
@@ -86,33 +124,28 @@ export function parseOccurredAt(raw: string): string | null {
     return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}T00:00:00+08:00`
   }
   const [, y, m, d, hh, mm, ss] = match
-  const pad = (v: string) => v.padStart(2, '0')
-  return `${y}-${pad(m)}-${pad(d)}T${pad(hh)}:${mm}:${ss ?? '00'}+08:00`
+  return `${y}-${pad2(Number(m))}-${pad2(Number(d))}T${pad2(Number(hh))}:${mm}:${ss ?? '00'}+08:00`
 }
 
-/** 找出真正的表头行：同时包含「交易时间」和「金额」的那一行 */
-function findHeaderIndex(lines: string[], source: BillSource): number {
-  for (let i = 0; i < Math.min(lines.length, 60); i += 1) {
-    const line = lines[i]
-    if (line.includes('交易时间') && line.includes('金额')) return i
+/** 在二维数组里找表头行：含「交易时间」优先，其次「交易类型 / 交易分类」 */
+function findHeaderRow(sheet: unknown[][], source: BillSource): number {
+  const limit = Math.min(sheet.length, 60)
+  for (let i = 0; i < limit; i += 1) {
+    const cells = (sheet[i] ?? []).map(cellText)
+    if (cells.some((cell) => cell.includes('交易时间'))) return i
   }
-  return Math.min(FALLBACK_SKIP_LINES[source], Math.max(0, lines.length - 1))
+  for (let i = 0; i < limit; i += 1) {
+    const cells = (sheet[i] ?? []).map(cellText)
+    if (cells.some((cell) => cell.includes('交易类型') || cell.includes('交易分类'))) return i
+  }
+  return Math.min(FALLBACK_SKIP_LINES[source], Math.max(0, sheet.length - 1))
 }
 
-/** 解析一个账单 CSV 文本 */
-export function parseBillCsv(text: string, source: BillSource): ParseResult {
-  const cleanText = text.replace(/^\uFEFF/, '')
-  const lines = cleanText.split(/\r?\n/)
-  const headerIndex = findHeaderIndex(lines, source)
-  const body = lines.slice(headerIndex).join('\n')
+/** 二维表格 → 标准账单行（表头之后的每一行都是数据） */
+export function parseBillSheet(sheet: unknown[][], source: BillSource): ParseResult {
+  const headerRowIndex = findHeaderRow(sheet, source)
+  const header = (sheet[headerRowIndex] ?? []).map((cell) => normalizeKey(cellText(cell)))
 
-  const parsed = Papa.parse<Record<string, string>>(body, {
-    header: true,
-    skipEmptyLines: 'greedy',
-    transformHeader: normalizeKey,
-  })
-
-  const timeKeys = ['交易时间']
   const amountKeys = source === 'wechat' ? ['金额(元)', '金额'] : ['金额']
   const categoryKeys = source === 'wechat' ? ['交易类型'] : ['交易分类']
   const descKeys = source === 'wechat' ? ['商品'] : ['商品说明', '商品']
@@ -121,11 +154,11 @@ export function parseBillCsv(text: string, source: BillSource): ParseResult {
   let skipped = 0
   let total = 0
 
-  for (const row of parsed.data) {
-    if (!row || typeof row !== 'object') continue
-    const occurredAt = parseOccurredAt(pick(row, timeKeys))
-    const amount = parseAmount(pick(row, amountKeys))
-    const direction = parseDirection(pick(row, ['收/支', '收/支出']))
+  for (const row of sheet.slice(headerRowIndex + 1)) {
+    if (!Array.isArray(row) || row.length === 0) continue
+    const occurredAt = parseOccurredAt(pickTime(header, row))
+    const amount = parseAmount(pickCell(header, row, amountKeys))
+    const direction = parseDirection(pickCell(header, row, ['收/支', '收/支出']))
     // 表尾的统计行 / 空行：没有时间且没有金额时直接忽略，不计入总数
     if (!occurredAt && amount === null) continue
     total += 1
@@ -138,12 +171,99 @@ export function parseBillCsv(text: string, source: BillSource): ParseResult {
       source,
       direction,
       amount,
-      category: pick(row, categoryKeys).slice(0, 50),
-      description: pick(row, descKeys).slice(0, 200),
+      category: pickCell(header, row, categoryKeys).slice(0, 50),
+      description: pickCell(header, row, descKeys).slice(0, 200),
     })
   }
 
   return { rows, skipped, total }
+}
+
+/** 在说明文字里找真正表头所在行（按整行文本判断，避免引号内容打乱 CSV 解析） */
+function findHeaderLine(lines: string[], source: BillSource): number {
+  const limit = Math.min(lines.length, 60)
+  for (let i = 0; i < limit; i += 1) {
+    if (lines[i].includes('交易时间') && lines[i].includes('金额')) return i
+  }
+  for (let i = 0; i < limit; i += 1) {
+    if (
+      lines[i].includes('交易时间') ||
+      lines[i].includes('交易类型') ||
+      lines[i].includes('交易分类')
+    ) {
+      return i
+    }
+  }
+  return Math.min(FALLBACK_SKIP_LINES[source], Math.max(0, lines.length - 1))
+}
+
+/** 解析 CSV 文本（微信 / 支付宝都有导出 .csv 的情况） */
+export function parseBillCsv(text: string, source: BillSource): ParseResult {
+  const cleanText = text.replace(/^\uFEFF/, '')
+  const lines = cleanText.split(/\r?\n/)
+  const body = lines.slice(findHeaderLine(lines, source)).join('\n')
+  const parsed = Papa.parse<string[]>(body, { skipEmptyLines: 'greedy' })
+  return parseBillSheet(parsed.data as unknown[][], source)
+}
+
+/** 文件字节 → 文本：优先 UTF-8，出现替换符再按 GBK（微信早期导出）解一次 */
+export function decodeBillText(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  // UTF-16LE BOM（部分 Windows 导出）
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder('utf-16le').decode(buffer)
+  }
+  const text = new TextDecoder('utf-8').decode(buffer)
+  if (!text.includes('\uFFFD')) return text
+  try {
+    return new TextDecoder('gbk').decode(buffer)
+  } catch {
+    return text
+  }
+}
+
+/** 解析 .xls / .xlsx：动态引入 xlsx（体积较大），只取第一张表 */
+export async function parseBillWorkbook(
+  buffer: ArrayBuffer,
+  source: BillSource,
+): Promise<ParseResult> {
+  const XLSX = await import('xlsx')
+  const workbook = XLSX.read(buffer, { type: 'array', cellDates: true })
+  const firstSheetName = workbook.SheetNames[0]
+  if (!firstSheetName) return { rows: [], skipped: 0, total: 0 }
+  const worksheet = workbook.Sheets[firstSheetName]
+  const sheet = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
+    header: 1,
+    raw: true,
+    blankrows: false,
+  }) as unknown as unknown[][]
+  return parseBillSheet(sheet, source)
+}
+
+/**
+ * 统一入口：按后缀选择解析方式。
+ * 微信新版导出是 .xls；也有把 CSV 内容直接命名为 .xls 的文件，
+ * 所以 xlsx 解析失败时回退成文本 CSV 再试一次。
+ */
+export async function parseBillFile(
+  file: { name: string; arrayBuffer: () => Promise<ArrayBuffer> },
+  source: BillSource,
+): Promise<ParseResult> {
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  const buffer = await file.arrayBuffer()
+
+  if (ext === 'csv' || ext === 'txt') return parseBillCsv(decodeBillText(buffer), source)
+
+  if (ext === 'xls' || ext === 'xlsx') {
+    try {
+      return await parseBillWorkbook(buffer, source)
+    } catch (err) {
+      console.warn('[Bills] xlsx 解析失败，回退按文本 CSV 解析:', err)
+      return parseBillCsv(decodeBillText(buffer), source)
+    }
+  }
+
+  throw new Error('只支持 .csv / .xls / .xlsx 格式的账单文件')
 }
 
 /** 汇总用的最小行结构：数据库行与解析结果都能直接传入 */
@@ -153,8 +273,6 @@ export type BillRecord = {
   amount: number | string
   category: string | null
 }
-
-const pad2 = (value: number) => String(value).padStart(2, '0')
 
 /**
  * ISO 时间 → 北京时间日期 key（YYYY-MM-DD）。
