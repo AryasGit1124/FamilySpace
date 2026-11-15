@@ -146,11 +146,6 @@ export function parseBillCsv(text: string, source: BillSource): ParseResult {
   return { rows, skipped, total }
 }
 
-/** 汇总用：判断某笔账单是否落在指定月份（YYYY-MM） */
-export function inMonth(occurredAt: string, yearMonth: string): boolean {
-  return occurredAt.slice(0, 7) === yearMonth
-}
-
 /** 汇总用的最小行结构：数据库行与解析结果都能直接传入 */
 export type BillRecord = {
   occurred_at: string
