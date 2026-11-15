@@ -620,6 +620,7 @@ export type OdsBillRow = {
   id: string
   source: string
   batch_id: string | null
+  category_id: string | null
   trade_time: string | null
   trade_type: string | null
   counterparty: string | null
@@ -730,7 +731,7 @@ export async function fetchOdsBills(params?: {
     supabase
       .from('bill_ods')
       .select(
-        'id, source, batch_id, trade_time, trade_type, counterparty, account, commodity, direction, amount, pay_method, status, trade_no, merchant_no, remark, raw_data, created_at',
+        'id, source, batch_id, category_id, trade_time, trade_type, counterparty, account, commodity, direction, amount, pay_method, status, trade_no, merchant_no, remark, raw_data, created_at',
       ),
     familyId,
   )
@@ -742,6 +743,61 @@ export async function fetchOdsBills(params?: {
 
   if (error) throw error
   return (data ?? []) as OdsBillRow[]
+}
+
+/** 未分类账单（只取匹配需要的列）：分页取全量，避免默认 1000 行上限 */
+export async function fetchUnclassifiedBills(): Promise<
+  { id: string; counterparty: string | null; commodity: string | null }[]
+> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const pageSize = 500
+  const rows: { id: string; counterparty: string | null; commodity: string | null }[] = []
+
+  for (let from = 0; from < 20000; from += pageSize) {
+    const { data, error } = await scoped(
+      supabase.from('bill_ods').select('id, counterparty, commodity'),
+      familyId,
+    )
+      .is('category_id', null)
+      .order('trade_time', { ascending: false, nullsFirst: false })
+      .range(from, from + pageSize - 1)
+
+    if (error) throw error
+    rows.push(
+      ...((data ?? []) as { id: string; counterparty: string | null; commodity: string | null }[]),
+    )
+    if (!data || data.length < pageSize) break
+  }
+  return rows
+}
+
+/** 按分类批量回写 category_id，单次 200 条 */
+export async function updateBillsCategory(ids: string[], categoryId: string): Promise<number> {
+  if (ids.length === 0) return 0
+  const supabase = await requireSupabase()
+  const chunkSize = 200
+  let updated = 0
+  for (let start = 0; start < ids.length; start += chunkSize) {
+    const chunk = ids.slice(start, start + chunkSize)
+    const { error } = await supabase
+      .from('bill_ods')
+      .update({ category_id: categoryId })
+      .in('id', chunk)
+    if (error) throw error
+    updated += chunk.length
+  }
+  return updated
+}
+
+/** 手动给单条账单设置分类（categoryId 为 null 表示清空） */
+export async function updateOdsBillCategory(id: string, categoryId: string | null) {
+  const supabase = await requireSupabase()
+  const { error } = await supabase
+    .from('bill_ods')
+    .update({ category_id: categoryId })
+    .eq('id', id)
+  if (error) throw error
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

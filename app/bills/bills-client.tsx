@@ -11,10 +11,18 @@ import {
   findRawHeaderRow,
   isMissingBillTable,
   newBatchId,
+  pickBillCategory,
   readBillSheet,
   type BillSource,
 } from '@/lib/bills'
-import { fetchOdsBatches, insertOdsBills, type OdsBatch } from '@/lib/supabase-queries'
+import {
+  fetchBillRules,
+  fetchOdsBatches,
+  fetchUnclassifiedBills,
+  insertOdsBills,
+  updateBillsCategory,
+  type OdsBatch,
+} from '@/lib/supabase-queries'
 
 type Phase = 'idle' | 'parsing' | 'saving'
 
@@ -47,6 +55,7 @@ export function BillsClient() {
   const [batches, setBatches] = useState<OdsBatch[]>([])
   const [listLoading, setListLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
+  const [cleaning, setCleaning] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const pendingSource = useRef<BillSource>('wechat')
 
@@ -71,6 +80,59 @@ export function BillsClient() {
   useEffect(() => {
     void loadBatches()
   }, [loadBatches])
+
+  /** 一键执行分类规则：只处理 category_id 为空的记录 */
+  const runRules = async () => {
+    setCleaning(true)
+    setError('')
+    try {
+      const [ruleList, pending] = await Promise.all([fetchBillRules(), fetchUnclassifiedBills()])
+      if (ruleList.length === 0) {
+        alert('还没有任何归类规则，先去「分类规则」里给分类添加关键词吧')
+        return
+      }
+      if (pending.length === 0) {
+        alert('没有待分类的账单')
+        return
+      }
+
+      // 同一分类的记录攒在一起，一次性回写
+      const groups = new Map<string, string[]>()
+      for (const bill of pending) {
+        const categoryId = pickBillCategory(bill, ruleList)
+        if (!categoryId) continue
+        const list = groups.get(categoryId) ?? []
+        list.push(bill.id)
+        groups.set(categoryId, list)
+      }
+
+      setPhase('saving')
+      setPercent(null)
+      setMessage(`正在按规则分类…（待处理 ${pending.length} 条）`)
+
+      let updated = 0
+      for (const [categoryId, ids] of groups) {
+        updated += await updateBillsCategory(ids, categoryId)
+        setMessage(`已自动分类 ${updated} 条…`)
+      }
+
+      setPhase('idle')
+      setMessage('')
+      alert(`成功自动分类了 ${updated} 条记录！`)
+    } catch (err) {
+      const detail = describeBillError(err)
+      console.error('[Bills] 规则分类失败:', detail, err)
+      setPhase('idle')
+      setMessage('')
+      setError(
+        isMissingBillTable(err)
+          ? '账单表还缺 category_id 列：请重新执行 scripts/create-bill-ods.sql'
+          : `规则分类失败：${detail}`,
+      )
+    } finally {
+      setCleaning(false)
+    }
+  }
 
   const busy = phase !== 'idle'
 
@@ -213,6 +275,19 @@ export function BillsClient() {
           )}
 
           {error && <p className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</p>}
+
+          <button
+            type="button"
+            disabled={busy || cleaning}
+            onClick={() => void runRules()}
+            className="flex items-center justify-center gap-2 rounded-2xl border border-primary/30 bg-primary/5 px-4 py-3 text-sm font-semibold text-primary transition-colors hover:bg-primary/10 disabled:opacity-60"
+          >
+            <span aria-hidden="true">🪄</span>
+            {cleaning ? '正在按规则分类…' : '执行规则分类'}
+          </button>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            给未分类的账单按关键词自动打上分类；没命中的可以在「账单明细」里手动选。
+          </p>
 
           <p className="rounded-xl bg-muted px-4 py-3 text-xs leading-relaxed text-muted-foreground">
             导入按物理列映射：交易时间、交易类型、对方、商品、收/支、金额、支付方式、状态、单号、备注，

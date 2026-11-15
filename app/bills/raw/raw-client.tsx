@@ -1,11 +1,14 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { bjDateTime, describeBillError, isMissingBillTable } from '@/lib/bills'
 import {
+  fetchBillCategories,
   fetchOdsBatches,
   fetchOdsBills,
+  updateOdsBillCategory,
+  type BillCategory,
   type OdsBatch,
   type OdsBillRow,
 } from '@/lib/supabase-queries'
@@ -39,6 +42,7 @@ function AmountCell({ row }: { row: OdsBillRow }) {
 export function RawBillsClient({ batch }: { batch?: string }) {
   const [batches, setBatches] = useState<OdsBatch[]>([])
   const [rows, setRows] = useState<OdsBillRow[]>([])
+  const [categories, setCategories] = useState<BillCategory[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
@@ -46,12 +50,14 @@ export function RawBillsClient({ batch }: { batch?: string }) {
     setLoading(true)
     setError('')
     try {
-      const [batchList, billRows] = await Promise.all([
+      const [batchList, billRows, categoryList] = await Promise.all([
         fetchOdsBatches(),
         fetchOdsBills({ batchId: batch, limit: PAGE_LIMIT }),
+        fetchBillCategories(),
       ])
       setBatches(batchList)
       setRows(billRows)
+      setCategories(categoryList)
     } catch (err) {
       const detail = describeBillError(err)
       console.error('[Bills] 读取账单失败:', detail, err)
@@ -68,6 +74,26 @@ export function RawBillsClient({ batch }: { batch?: string }) {
   useEffect(() => {
     void load()
   }, [load])
+
+  const categoryById = useMemo(
+    () => new Map(categories.map((item) => [item.id, item])),
+    [categories],
+  )
+
+  /** 手动给单条账单补分类：先乐观更新，失败回滚 */
+  const assignCategory = async (id: string, categoryId: string) => {
+    if (!categoryId) return
+    const previous = rows.find((row) => row.id === id)?.category_id ?? null
+    setRows((prev) => prev.map((row) => (row.id === id ? { ...row, category_id: categoryId } : row)))
+    try {
+      await updateOdsBillCategory(id, categoryId)
+    } catch (err) {
+      setRows((prev) =>
+        prev.map((row) => (row.id === id ? { ...row, category_id: previous } : row)),
+      )
+      setError(`设置分类失败：${describeBillError(err)}`)
+    }
+  }
 
   return (
     <div className="flex h-[calc(100dvh-6rem)] flex-col overflow-hidden">
@@ -147,38 +173,64 @@ export function RawBillsClient({ batch }: { batch?: string }) {
 
         {rows.length > 0 && (
           <div className="min-h-0 flex-1 overflow-auto rounded-2xl border bg-card">
-            <table className="w-full min-w-[34rem] border-collapse text-xs">
+            <table className="w-full min-w-[42rem] border-collapse text-xs">
               <thead className="sticky top-0 z-10 bg-muted">
                 <tr className="text-left text-muted-foreground">
                   <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">交易时间</th>
                   <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">交易对方</th>
                   <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">商品 / 说明</th>
+                  <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">分类</th>
                   <th className="whitespace-nowrap border-b px-2.5 py-2 text-right font-semibold">
                     金额
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
-                  <tr key={row.id} className="odd:bg-white even:bg-muted/30">
-                    <td className="whitespace-nowrap border-b px-2.5 py-1.5 tabular-nums">
-                      {row.trade_time ? bjDateTime(row.trade_time) : '—'}
-                    </td>
-                    <td
-                      title={row.counterparty ?? ''}
-                      className="max-w-[10rem] truncate border-b px-2.5 py-1.5"
-                    >
-                      {row.counterparty || '—'}
-                    </td>
-                    <td
-                      title={row.commodity ?? ''}
-                      className="max-w-[16rem] truncate border-b px-2.5 py-1.5"
-                    >
-                      {row.commodity || '—'}
-                    </td>
-                    <AmountCell row={row} />
-                  </tr>
-                ))}
+                {rows.map((row) => {
+                  const category = row.category_id ? categoryById.get(row.category_id) : undefined
+                  return (
+                    <tr key={row.id} className="odd:bg-white even:bg-muted/30">
+                      <td className="whitespace-nowrap border-b px-2.5 py-1.5 tabular-nums">
+                        {row.trade_time ? bjDateTime(row.trade_time) : '—'}
+                      </td>
+                      <td
+                        title={row.counterparty ?? ''}
+                        className="max-w-[10rem] truncate border-b px-2.5 py-1.5"
+                      >
+                        {row.counterparty || '—'}
+                      </td>
+                      <td
+                        title={row.commodity ?? ''}
+                        className="max-w-[16rem] truncate border-b px-2.5 py-1.5"
+                      >
+                        {row.commodity || '—'}
+                      </td>
+                      <td className="whitespace-nowrap border-b px-2.5 py-1.5">
+                        {category ? (
+                          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px]">
+                            {category.emoji} {category.name}
+                          </span>
+                        ) : categories.length > 0 ? (
+                          <select
+                            value=""
+                            onChange={(event) => void assignCategory(row.id, event.target.value)}
+                            className="rounded-lg border bg-white px-1.5 py-1 text-[11px] text-muted-foreground"
+                          >
+                            <option value="">未分类</option>
+                            {categories.map((item) => (
+                              <option key={item.id} value={item.id}>
+                                {item.emoji} {item.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-[11px] text-muted-foreground">未分类</span>
+                        )}
+                      </td>
+                      <AmountCell row={row} />
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

@@ -23,14 +23,21 @@ create table if not exists public.bill_ods (
   merchant_no text,                  -- 微信「商户单号」/ 支付宝「商家订单号」
   remark text,                       -- 备注
   raw_data jsonb,                    -- 整行原始数据
+  category_id uuid references public.bill_categories (id) on delete set null,
   created_at timestamptz default now()
 );
+
+-- 已有表补列（规则清洗 / 手动分类用）
+alter table public.bill_ods
+  add column if not exists category_id uuid references public.bill_categories (id) on delete set null;
 
 -- 明细页按时间倒序、批次页按 batch_id 聚合，都用到索引
 create index if not exists bill_ods_family_time_idx
   on public.bill_ods (family_id, trade_time desc);
 create index if not exists bill_ods_family_batch_idx
   on public.bill_ods (family_id, batch_id);
+create index if not exists bill_ods_family_category_idx
+  on public.bill_ods (family_id, category_id);
 
 -- 2. 当前用户所属家庭（未执行过 enable-rls-strict.sql 时兜底创建）
 create or replace function public.current_family_id()

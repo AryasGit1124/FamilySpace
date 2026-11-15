@@ -275,6 +275,40 @@ export function newBatchId(): string {
   return `${stamp}-${Math.random().toString(36).slice(2, 6)}`
 }
 
+/** 规则匹配字段：交易对方 / 商品说明 / 全部 */
+export type BillRuleLike = {
+  keyword: string
+  match_field: 'counterparty' | 'commodity' | 'all'
+}
+
+/** 账单里参与关键词匹配的字段 */
+export type BillTextLike = {
+  counterparty?: string | null
+  commodity?: string | null
+}
+
+/** 单条规则是否命中（不区分大小写的包含匹配） */
+export function ruleMatches(bill: BillTextLike, rule: BillRuleLike): boolean {
+  const keyword = rule.keyword.trim().toLowerCase()
+  if (!keyword) return false
+  const hit = (value: string | null | undefined) => (value ?? '').toLowerCase().includes(keyword)
+  if (rule.match_field === 'counterparty') return hit(bill.counterparty)
+  if (rule.match_field === 'commodity') return hit(bill.commodity)
+  return hit(bill.counterparty) || hit(bill.commodity)
+}
+
+/** 按优先级从高到低找第一条命中的规则，返回分类 id；全不命中返回 null */
+export function pickBillCategory(
+  bill: BillTextLike,
+  rules: (BillRuleLike & { category_id: string; priority: number })[],
+): string | null {
+  const ordered = [...rules].sort((a, b) => b.priority - a.priority)
+  for (const rule of ordered) {
+    if (ruleMatches(bill, rule)) return rule.category_id
+  }
+  return null
+}
+
 /** ISO 时间 → 北京时间「YYYY-MM-DD HH:mm」 */
 export function bjDateTime(iso: string): string {
   const time = Date.parse(iso)
