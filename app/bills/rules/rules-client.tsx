@@ -26,7 +26,7 @@ const FIELD_LABELS: Record<BillRuleField, string> = {
   all: '全部',
 }
 
-type CategoryDraft = { id?: string; name: string; emoji: string }
+type CategoryDraft = { id?: string; name: string; emoji: string; parentId?: string | null }
 type RuleDraft = { keyword: string; field: BillRuleField; priority: string }
 
 /** 通用弹窗外壳：手机从底部弹出，iPad 居中 */
@@ -118,6 +118,77 @@ export function RulesClient() {
   )
   const ruleCount = (categoryId: string) => rules.filter((rule) => rule.category_id === categoryId).length
 
+  /** 一级分类：没有父级，或父级已不存在的孤儿分类 */
+  const topCategories = categories.filter(
+    (item) => !item.parent_id || !categories.some((parent) => parent.id === item.parent_id),
+  )
+  const childCategories = (parentId: string) =>
+    categories.filter((item) => item.parent_id === parentId)
+
+  const renderCategoryRow = (category: BillCategory, isChild = false) => (
+    <li key={category.id}>
+      <div
+        className={cn(
+          'flex items-center gap-1 py-1.5 pl-2 pr-2',
+          isChild && 'pl-7',
+          selectedId === category.id && 'bg-primary/5',
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => setSelectedId(category.id)}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-muted/60"
+        >
+          <span className={isChild ? 'text-base' : 'text-xl'}>{category.emoji}</span>
+          <span className={cn('truncate font-medium', isChild ? 'text-xs' : 'text-sm')}>
+            {category.name}
+          </span>
+          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            {ruleCount(category.id)} 条规则
+          </span>
+        </button>
+        {!isChild && (
+          <button
+            type="button"
+            aria-label={`在 ${category.name} 下添加子分类`}
+            title="添加子分类"
+            onClick={() => {
+              setFormError('')
+              setCategoryDraft({ name: '', emoji: category.emoji, parentId: category.id })
+            }}
+            className="rounded-lg px-1.5 py-1 text-sm font-bold text-primary hover:bg-muted"
+          >
+            ＋
+          </button>
+        )}
+        <button
+          type="button"
+          aria-label={`编辑 ${category.name}`}
+          onClick={() => {
+            setFormError('')
+            setCategoryDraft({
+              id: category.id,
+              name: category.name,
+              emoji: category.emoji,
+              parentId: category.parent_id,
+            })
+          }}
+          className="rounded-lg px-2 py-1 text-sm hover:bg-muted"
+        >
+          ✏️
+        </button>
+        <button
+          type="button"
+          aria-label={`删除 ${category.name}`}
+          onClick={() => void removeCategory(category)}
+          className="rounded-lg px-2 py-1 text-sm hover:bg-muted"
+        >
+          🗑️
+        </button>
+      </div>
+    </li>
+  )
+
   const saveCategory = async () => {
     if (!categoryDraft) return
     const name = categoryDraft.name.trim()
@@ -136,7 +207,11 @@ export function RulesClient() {
           ),
         )
       } else {
-        const created = await insertBillCategory({ name, emoji: categoryDraft.emoji })
+        const created = await insertBillCategory({
+          name,
+          emoji: categoryDraft.emoji,
+          parentId: categoryDraft.parentId ?? null,
+        })
         setCategories((prev) => [...prev, created])
         setSelectedId(created.id)
       }
@@ -149,13 +224,19 @@ export function RulesClient() {
   }
 
   const removeCategory = async (category: BillCategory) => {
-    if (!confirm(`删除分类「${category.name}」？该分类下的规则会一并删除。`)) return
+    const children = childCategories(category.id)
+    const hint =
+      children.length > 0
+        ? `删除分类「${category.name}」？它下面的 ${children.length} 个子分类和所有相关规则会一并删除。`
+        : `删除分类「${category.name}」？该分类下的规则会一并删除。`
+    if (!confirm(hint)) return
     try {
       await deleteBillCategory(category.id)
-      setCategories((prev) => prev.filter((item) => item.id !== category.id))
-      setRules((prev) => prev.filter((rule) => rule.category_id !== category.id))
-      if (selectedId === category.id) {
-        setSelectedId(categories.find((item) => item.id !== category.id)?.id ?? '')
+      const removedIds = new Set([category.id, ...children.map((child) => child.id)])
+      setCategories((prev) => prev.filter((item) => !removedIds.has(item.id)))
+      setRules((prev) => prev.filter((rule) => !removedIds.has(rule.category_id)))
+      if (removedIds.has(selectedId)) {
+        setSelectedId(categories.find((item) => !removedIds.has(item.id))?.id ?? '')
       }
     } catch (err) {
       setError(`删除分类失败：${describeBillError(err)}`)
@@ -252,47 +333,10 @@ export function RulesClient() {
             </p>
           ) : (
             <ul className="min-h-0 flex-1 divide-y overflow-y-auto">
-              {categories.map((category) => (
-                <li key={category.id}>
-                  <div
-                    className={cn(
-                      'flex items-center gap-1 px-2 py-1.5',
-                      selectedId === category.id && 'bg-primary/5',
-                    )}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setSelectedId(category.id)}
-                      className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-muted/60"
-                    >
-                      <span className="text-xl">{category.emoji}</span>
-                      <span className="truncate text-sm font-medium">{category.name}</span>
-                      <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                        {ruleCount(category.id)} 条规则
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`编辑 ${category.name}`}
-                      onClick={() => {
-                        setFormError('')
-                        setCategoryDraft({ id: category.id, name: category.name, emoji: category.emoji })
-                      }}
-                      className="rounded-lg px-2 py-1 text-sm hover:bg-muted"
-                    >
-                      ✏️
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`删除 ${category.name}`}
-                      onClick={() => void removeCategory(category)}
-                      className="rounded-lg px-2 py-1 text-sm hover:bg-muted"
-                    >
-                      🗑️
-                    </button>
-                  </div>
-                </li>
-              ))}
+              {topCategories.flatMap((parent) => [
+                renderCategoryRow(parent),
+                ...childCategories(parent.id).map((child) => renderCategoryRow(child, true)),
+              ])}
             </ul>
           )}
         </section>
@@ -350,7 +394,7 @@ export function RulesClient() {
 
           {selected && selectedRules.length > 0 && (
             <p className="shrink-0 border-t px-3 py-2 text-[11px] text-muted-foreground">
-              同一笔账单命中多条规则时，优先级数字大的先生效
+              同一笔账单命中多条规则时，优先级数字大的先生效；优先级相同时二级分类优先
             </p>
           )}
         </section>
@@ -358,10 +402,24 @@ export function RulesClient() {
 
       {categoryDraft && (
         <Modal
-          title={categoryDraft.id ? '编辑分类' : '新增分类'}
+          title={
+            categoryDraft.id
+              ? '编辑分类'
+              : categoryDraft.parentId
+                ? '添加子分类'
+                : '新增分类'
+          }
           onClose={() => setCategoryDraft(null)}
         >
           <div className="flex flex-col gap-3">
+            {!categoryDraft.id && categoryDraft.parentId && (
+              <p className="rounded-xl bg-muted px-3 py-2 text-xs text-muted-foreground">
+                父级分类：
+                <span className="font-semibold text-foreground">
+                  {categories.find((item) => item.id === categoryDraft.parentId)?.name ?? '—'}
+                </span>
+              </p>
+            )}
             <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
               分类名称
               <input

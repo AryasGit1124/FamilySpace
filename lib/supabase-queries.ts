@@ -837,12 +837,23 @@ export async function fetchBillCategories(): Promise<BillCategory[]> {
   return (data ?? []) as BillCategory[]
 }
 
-export async function insertBillCategory(params: { name: string; emoji: string }) {
+export async function insertBillCategory(params: {
+  name: string
+  emoji: string
+  /** 父级分类（二级分类）；不传表示一级分类 */
+  parentId?: string | null
+}) {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const { data, error } = await supabase
     .from('bill_categories')
-    .insert({ name: params.name, emoji: params.emoji, ...familyPatch(familyId) })
+    .insert({
+      name: params.name,
+      emoji: params.emoji,
+      // 一级分类不带 parent_id，避免旧库还没加列时报错
+      ...(params.parentId ? { parent_id: params.parentId } : {}),
+      ...familyPatch(familyId),
+    })
     .select('id, name, emoji, sort_order, parent_id')
     .single()
   if (error) throw error

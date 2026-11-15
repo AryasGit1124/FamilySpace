@@ -297,12 +297,20 @@ export function ruleMatches(bill: BillTextLike, rule: BillRuleLike): boolean {
   return hit(bill.counterparty) || hit(bill.commodity)
 }
 
-/** 按优先级从高到低找第一条命中的规则，返回分类 id；全不命中返回 null */
+/**
+ * 按优先级从高到低找第一条命中的规则，返回分类 id；全不命中返回 null。
+ * depthOf 用于「二级分类优先于一级」：同优先级时层级深的先命中。
+ */
 export function pickBillCategory(
   bill: BillTextLike,
   rules: (BillRuleLike & { category_id: string; priority: number })[],
+  depthOf?: (categoryId: string) => number,
 ): string | null {
-  const ordered = [...rules].sort((a, b) => b.priority - a.priority)
+  const ordered = [...rules].sort(
+    (a, b) =>
+      b.priority - a.priority ||
+      (depthOf ? depthOf(b.category_id) - depthOf(a.category_id) : 0),
+  )
   for (const rule of ordered) {
     if (ruleMatches(bill, rule)) return rule.category_id
   }
