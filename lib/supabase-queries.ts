@@ -688,6 +688,33 @@ export async function insertOdsBills(params: {
   return saved
 }
 
+/** 手动记账：直接写入 bill_ods（source=manual，无批次号，直接带用户选的分类） */
+export async function insertManualBill(params: {
+  direction: 'income' | 'expense'
+  amount: number
+  commodity: string | null
+  categoryId: string | null
+  /** ISO 时间串 */
+  tradeTime: string
+}): Promise<void> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  if (!familyId) throw new Error('没有找到当前家庭，请重新登录后再记账')
+
+  const { error } = await supabase.from('bill_ods').insert({
+    family_id: familyId,
+    source: 'manual',
+    batch_id: null,
+    trade_time: params.tradeTime,
+    commodity: params.commodity,
+    direction: params.direction === 'income' ? '收入' : '支出',
+    amount: params.amount,
+    category_id: params.categoryId,
+    raw_data: { 来源: '手动记账' },
+  })
+  if (error) throw error
+}
+
 /** 导入批次列表：只取轻量列，按 batch_id 聚合条数与最近时间 */
 export async function fetchOdsBatches(limit = 5000): Promise<OdsBatch[]> {
   const supabase = await requireSupabase()
@@ -735,7 +762,9 @@ export async function fetchOdsBills(params?: {
       ),
     familyId,
   )
-  if (params?.batchId) query = query.eq('batch_id', params.batchId)
+  // 手动记账没有批次号，聚合时会归到「(无批次号)」，这里用 is null 查询
+  if (params?.batchId === '(无批次号)') query = query.is('batch_id', null)
+  else if (params?.batchId) query = query.eq('batch_id', params.batchId)
 
   const { data, error } = await query
     .order('trade_time', { ascending: false, nullsFirst: false })

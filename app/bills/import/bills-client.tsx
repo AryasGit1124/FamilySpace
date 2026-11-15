@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { PageHeader } from '@/components/page-header'
+import { ManualBillSheet } from '@/app/bills/manual-bill-sheet'
 import {
   bjDateTime,
   buildOdsRows,
@@ -50,6 +51,13 @@ const SOURCE_META: Record<BillSource, { label: string; hint: string; className: 
 
 const money = (value: number | null) =>
   value === null ? '—' : `¥${Number(value).toFixed(2)}`
+
+/** 批次 chips 里的来源简称，兼容手动记账（source=manual） */
+const SOURCE_LABELS: Record<string, string> = {
+  wechat: '微信',
+  alipay: '支付宝',
+  manual: '手动',
+}
 
 /** 账单卡片：手机端优先，商品说明大字 + 对方/时间小字 + 金额 + 分类标签 */
 function BillCard({
@@ -134,6 +142,7 @@ export function BillsClient() {
   const [listLoading, setListLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [cleaning, setCleaning] = useState(false)
+  const [manualOpen, setManualOpen] = useState(false)
 
   const inputRef = useRef<HTMLInputElement | null>(null)
   const pendingSource = useRef<BillSource>('wechat')
@@ -456,7 +465,7 @@ export function BillsClient() {
                       : 'border-slate-200 bg-white text-slate-600',
                   ].join(' ')}
                 >
-                  <span>{SOURCE_META[batch.source as BillSource]?.short ?? batch.source}</span>
+                  <span>{SOURCE_LABELS[batch.source] ?? batch.source}</span>
                   <span className="tabular-nums">{batch.count}</span>
                 </button>
               ))}
@@ -496,6 +505,28 @@ export function BillsClient() {
           整行原始数据同时存入 raw_data；每 100 条一批写入 bill_ods。
         </p>
       </div>
+
+      {/* 手机端悬浮「记一笔」 */}
+      <button
+        type="button"
+        onClick={() => setManualOpen(true)}
+        aria-label="记一笔"
+        className="fixed bottom-20 right-4 z-50 flex h-16 w-16 items-center justify-center rounded-full bg-blue-600 text-3xl font-light text-white shadow-lg active:bg-blue-700"
+      >
+        <span aria-hidden="true">＋</span>
+      </button>
+
+      {manualOpen && (
+        <ManualBillSheet
+          categories={categories}
+          onClose={() => setManualOpen(false)}
+          onSaved={async () => {
+            // 手动记账没有批次号，清掉批次筛选让新记录出现在最上方
+            setSelectedBatch('')
+            await loadInitial()
+          }}
+        />
+      )}
     </div>
   )
 }
