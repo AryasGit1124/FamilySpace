@@ -140,12 +140,17 @@ export function StatsClient() {
     [buckets, granularity],
   )
 
-  const pieData = useMemo(
-    () => shares.map((share, index) => ({ ...share, fill: PIE_COLORS[index % PIE_COLORS.length] })),
-    [shares],
-  )
+  /** 饼图只保留 Top 5，其余合并为「其他」 */
+  const pieData = useMemo(() => {
+    const sorted = [...shares].sort((a, b) => b.value - a.value)
+    const top = sorted.slice(0, 5)
+    const rest = sorted.slice(5).reduce((sum, share) => sum + share.value, 0)
+    const data = rest > 0 ? [...top, { name: '其他', emoji: '📦', value: Math.round(rest * 100) / 100 }] : top
+    return data.map((share, index) => ({ ...share, fill: PIE_COLORS[index % PIE_COLORS.length] }))
+  }, [shares])
 
   const totalExpense = useMemo(() => shares.reduce((sum, share) => sum + share.value, 0), [shares])
+
   const totals = useMemo(
     () =>
       buckets.reduce(
@@ -178,7 +183,7 @@ export function StatsClient() {
   )
 
   return (
-    <div className="flex h-[calc(100dvh-6rem)] flex-col overflow-hidden">
+    <div className="min-h-[100dvh] pb-24">
       <PageHeader
         title="数据统计"
         subtitle="按时间维度看收支，按分类看结构"
@@ -196,7 +201,7 @@ export function StatsClient() {
         }
       />
 
-      <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4 md:px-6 lg:overflow-hidden">
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-3 px-4 md:px-6">
         {error && (
           <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
             <span className="flex-1">{error}</span>
@@ -233,7 +238,7 @@ export function StatsClient() {
           <select
             value={categoryId}
             onChange={(event) => setCategoryId(event.target.value)}
-            className="rounded-full border bg-white px-3 py-1.5 text-xs font-medium outline-none focus:border-primary sm:text-sm"
+            className="min-w-0 flex-1 rounded-full border bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary sm:flex-none"
           >
             <option value="">全部分类</option>
             {topCategories.map((parent) => (
@@ -251,7 +256,7 @@ export function StatsClient() {
             {categories.length === 0 && <option disabled>还没建分类</option>}
           </select>
 
-          <div className="ml-auto flex items-center gap-3 text-xs">
+          <div className="flex w-full items-center justify-between gap-2 rounded-xl bg-muted/60 px-3 py-2 text-xs sm:ml-auto sm:w-auto sm:bg-transparent sm:px-0 sm:py-0 sm:text-sm">
             <span className="text-muted-foreground">
               收入 <span className="font-bold text-emerald-600">{money(totals.income)}</span>
             </span>
@@ -273,7 +278,7 @@ export function StatsClient() {
         </div>
 
         {/* 图表区 */}
-        <div className="grid shrink-0 gap-3 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+        <div className="grid gap-3 md:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
           <section className="rounded-2xl border bg-card p-3">
             <h2 className="mb-1 text-sm font-bold">收入 / 支出</h2>
             {loading ? (
@@ -281,7 +286,7 @@ export function StatsClient() {
             ) : chartData.length === 0 ? (
               <p className="py-16 text-center text-sm text-muted-foreground">这个范围内没有数据</p>
             ) : (
-              <div className="h-[220px] w-full">
+              <div className="h-64 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -318,7 +323,7 @@ export function StatsClient() {
               </p>
             ) : (
               <>
-                <div className="h-[170px] w-full">
+                <div className="h-56 w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
@@ -359,50 +364,40 @@ export function StatsClient() {
           </section>
         </div>
 
-        {/* 明细 / 汇总表格 */}
-        <section className="flex min-h-[14rem] flex-col rounded-2xl border bg-card lg:min-h-0 lg:flex-1">
-          <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-            <h2 className="text-sm font-bold">
+        {/* 明细 / 汇总卡片流 */}
+        <section>
+          <div className="mb-2 flex items-center gap-2">
+            <h2 className="text-base font-bold">
               {granularity === 'day' ? '交易明细' : granularity === 'month' ? '月度汇总' : '年度汇总'}
             </h2>
             <span className="text-xs text-muted-foreground">
               {granularity === 'day' ? `${dayRows.length} 条（最多 300）` : `${buckets.length} 期`}
             </span>
-          </header>
+          </div>
 
-          <div className="max-h-[40dvh] min-h-0 flex-1 overflow-auto lg:max-h-none">
-            {granularity === 'day' ? (
-              <table className="w-full min-w-[38rem] border-collapse text-xs">
-                <thead className="sticky top-0 z-10 bg-muted text-left text-muted-foreground">
-                  <tr>
-                    <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">交易时间</th>
-                    <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">商品说明</th>
-                    <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">分类</th>
-                    <th className="whitespace-nowrap border-b px-2.5 py-2 text-right font-semibold">
-                      金额
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {dayRows.map((bill) => {
-                    const direction = billDirectionOf(bill.direction)
-                    return (
-                      <tr key={bill.id} className="odd:bg-white even:bg-muted/30">
-                        <td className="whitespace-nowrap border-b px-2.5 py-1.5 tabular-nums">
-                          {bill.trade_time ? bjDateTime(bill.trade_time) : '—'}
-                        </td>
-                        <td
-                          title={bill.commodity ?? ''}
-                          className="max-w-[16rem] truncate border-b px-2.5 py-1.5"
-                        >
-                          {bill.commodity || '—'}
-                        </td>
-                        <td className="whitespace-nowrap border-b px-2.5 py-1.5 text-muted-foreground">
-                          {categoryLabel(bill.category_id)}
-                        </td>
-                        <td
+          {granularity === 'day' ? (
+            dayRows.length === 0 ? (
+              <p className="rounded-2xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+                没有符合筛选条件的交易
+              </p>
+            ) : (
+              <ul className="grid gap-2 md:grid-cols-2">
+                {dayRows.map((bill) => {
+                  const direction = billDirectionOf(bill.direction)
+                  return (
+                    <li key={bill.id} className="rounded-2xl border bg-card p-3">
+                      <div className="flex items-start gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-base font-semibold leading-snug">
+                            {bill.commodity || '—'}
+                          </p>
+                          <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">
+                            {bill.trade_time ? bjDateTime(bill.trade_time) : '—'}
+                          </p>
+                        </div>
+                        <span
                           className={cn(
-                            'whitespace-nowrap border-b px-2.5 py-1.5 text-right font-medium tabular-nums',
+                            'shrink-0 text-base font-bold tabular-nums',
                             direction === 'income'
                               ? 'text-emerald-600'
                               : direction === 'expense'
@@ -412,60 +407,45 @@ export function StatsClient() {
                         >
                           {direction === 'income' ? '+' : direction === 'expense' ? '-' : ''}
                           {money(Number(bill.amount ?? 0))}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                  {dayRows.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">
-                        没有符合筛选条件的交易
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            ) : (
-              <table className="w-full min-w-[30rem] border-collapse text-xs">
-                <thead className="sticky top-0 z-10 bg-muted text-left text-muted-foreground">
-                  <tr>
-                    <th className="whitespace-nowrap border-b px-2.5 py-2 font-semibold">期间</th>
-                    <th className="whitespace-nowrap border-b px-2.5 py-2 text-right font-semibold">收入</th>
-                    <th className="whitespace-nowrap border-b px-2.5 py-2 text-right font-semibold">支出</th>
-                    <th className="whitespace-nowrap border-b px-2.5 py-2 text-right font-semibold">结余</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...buckets].reverse().map((bucket) => (
-                    <tr key={bucket.key} className="odd:bg-white even:bg-muted/30">
-                      <td className="whitespace-nowrap border-b px-2.5 py-1.5 font-medium">{bucket.key}</td>
-                      <td className="whitespace-nowrap border-b px-2.5 py-1.5 text-right tabular-nums text-emerald-600">
-                        {money(bucket.income)}
-                      </td>
-                      <td className="whitespace-nowrap border-b px-2.5 py-1.5 text-right tabular-nums text-red-500">
-                        {money(bucket.expense)}
-                      </td>
-                      <td
-                        className={cn(
-                          'whitespace-nowrap border-b px-2.5 py-1.5 text-right font-medium tabular-nums',
-                          bucket.net >= 0 ? 'text-emerald-600' : 'text-red-500',
-                        )}
-                      >
-                        {money(bucket.net)}
-                      </td>
-                    </tr>
-                  ))}
-                  {buckets.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">
-                        没有符合筛选条件的数据
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            )}
-          </div>
+                        </span>
+                      </div>
+                      <div className="mt-1.5">
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                          {categoryLabel(bill.category_id)}
+                        </span>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            )
+          ) : buckets.length === 0 ? (
+            <p className="rounded-2xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">
+              没有符合筛选条件的数据
+            </p>
+          ) : (
+            <ul className="grid gap-2 md:grid-cols-2">
+              {[...buckets].reverse().map((bucket) => (
+                <li key={bucket.key} className="rounded-2xl border bg-card p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-base font-semibold tabular-nums">{bucket.key}</span>
+                    <span
+                      className={cn(
+                        'text-sm font-bold tabular-nums',
+                        bucket.net >= 0 ? 'text-emerald-600' : 'text-red-500',
+                      )}
+                    >
+                      结余 {money(bucket.net)}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex gap-4 text-xs">
+                    <span className="text-emerald-600">收入 {money(bucket.income)}</span>
+                    <span className="text-red-500">支出 {money(bucket.expense)}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       </div>
     </div>

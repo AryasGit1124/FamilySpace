@@ -3,7 +3,6 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { PageHeader } from '@/components/page-header'
-import { BillDetailTable } from '@/app/bills/bill-table'
 import {
   bjDateTime,
   buildOdsRows,
@@ -37,20 +36,89 @@ const PAGE_LIMIT = 200
 const SOURCE_META: Record<BillSource, { label: string; hint: string; className: string; short: string }> = {
   wechat: {
     label: '导入微信账单',
-    hint: '微信 → 我 → 服务 → 钱包 → 账单 → 常见问题 → 下载账单（.xlsx / .csv）',
-    className: 'bg-emerald-500 hover:bg-emerald-600',
+    hint: '钱包 → 账单 → 常见问题 → 下载账单',
+    className: 'bg-emerald-500 active:bg-emerald-600',
     short: '微信',
   },
   alipay: {
     label: '导入支付宝账单',
-    hint: '支付宝 → 我的 → 账单 → 右上角… → 开具交易流水证明（.csv / .xlsx）',
-    className: 'bg-sky-500 hover:bg-sky-600',
+    hint: '我的 → 账单 → … → 开具交易流水证明',
+    className: 'bg-sky-500 active:bg-sky-600',
     short: '支付宝',
   },
 }
 
+const money = (value: number | null) =>
+  value === null ? '—' : `¥${Number(value).toFixed(2)}`
+
+/** 账单卡片：手机端优先，商品说明大字 + 对方/时间小字 + 金额 + 分类标签 */
+function BillCard({
+  row,
+  categories,
+  onAssign,
+}: {
+  row: OdsBillRow
+  categories: BillCategory[]
+  onAssign: (id: string, categoryId: string) => void
+}) {
+  const direction = row.direction ?? ''
+  const isIncome = direction.includes('收')
+  const isExpense = direction.includes('支')
+  const category = row.category_id ? categories.find((item) => item.id === row.category_id) : undefined
+
+  return (
+    <li className="rounded-2xl border bg-card p-3">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-base font-semibold leading-snug">
+            {row.commodity || row.trade_type || '（无商品说明）'}
+          </p>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{row.counterparty || '—'}</p>
+          <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+            {row.trade_time ? bjDateTime(row.trade_time) : '—'}
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <span
+            className={
+              isIncome
+                ? 'text-base font-bold tabular-nums text-emerald-600'
+                : isExpense
+                  ? 'text-base font-bold tabular-nums text-red-500'
+                  : 'text-base font-bold tabular-nums text-muted-foreground'
+            }
+          >
+            {isIncome ? '+' : isExpense ? '-' : ''}
+            {money(row.amount)}
+          </span>
+          {category ? (
+            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+              {category.emoji} {category.name}
+            </span>
+          ) : categories.length > 0 ? (
+            <select
+              value=""
+              onChange={(event) => onAssign(row.id, event.target.value)}
+              className="rounded-full border border-dashed border-amber-400 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700"
+            >
+              <option value="">待分类</option>
+              {categories.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.emoji} {item.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700">待分类</span>
+          )}
+        </div>
+      </div>
+    </li>
+  )
+}
+
 /**
- * 账单导入：文件 → bill_ods 物理列 + raw_data，下方直接展示明细，
+ * 账单导入：文件 → bill_ods 物理列 + raw_data，下方卡片流展示明细，
  * 并提供「一键应用规则自动分类」。数据全部在浏览器端读写（线上服务端偶发 ECONNRESET）。
  */
 export function BillsClient() {
@@ -99,7 +167,7 @@ export function BillsClient() {
     void loadInitial()
   }, [loadInitial])
 
-  /** 切换批次筛选，只重新拉明细与批次 */
+  /** 切换批次筛选，只重新拉明细 */
   const changeBatch = async (batchId: string) => {
     setSelectedBatch(batchId)
     setListLoading(true)
@@ -112,7 +180,7 @@ export function BillsClient() {
     }
   }
 
-  /** 一级 / 二级分类层级：同优先级时让二级分类更具体，先命中 */
+  /** 一级 / 二级分类层级：同优先级时让二级分类先命中 */
   const buildDepthOf = (list: BillCategory[]) => {
     const byId = new Map(list.map((item) => [item.id, item]))
     return (categoryId: string) => {
@@ -146,7 +214,6 @@ export function BillsClient() {
       }
 
       const depthOf = buildDepthOf(categoryList)
-      // 同一分类的记录攒在一起，一次性回写
       const groups = new Map<string, string[]>()
       for (const bill of pending) {
         const categoryId = pickBillCategory(bill, ruleList, depthOf)
@@ -166,7 +233,6 @@ export function BillsClient() {
         setMessage(`已自动分类 ${updated} 条…`)
       }
 
-      // 分类变了，重新拉当前筛选下的明细
       const [batchList, billRows] = await Promise.all([
         fetchOdsBatches(),
         fetchOdsBills({ batchId: selectedBatch || undefined, limit: PAGE_LIMIT }),
@@ -224,7 +290,6 @@ export function BillsClient() {
         },
       })
 
-      // 导入后立刻展示这批数据
       setSelectedBatch(batchId)
       const [batchList, billRows] = await Promise.all([
         fetchOdsBatches(),
@@ -235,7 +300,6 @@ export function BillsClient() {
       alert(`成功导入 ${rowsToSave.length} 条记录，批次号：${batchId}`)
     } catch (err) {
       const detail = describeBillError(err)
-      // Supabase 的 PostgrestError 在浏览器控制台会显示成 {}，这里额外打印可读文本
       console.error('[Bills] 导入失败:', detail, err)
       if (isMissingBillTable(err)) {
         setError('账单表还没创建：请在 Supabase 执行 scripts/create-bill-ods.sql，然后重试')
@@ -265,134 +329,117 @@ export function BillsClient() {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-6rem)] flex-col overflow-hidden">
+    <div className="min-h-[100dvh] pb-24">
       <PageHeader
         title="家庭账单"
-        subtitle="导入微信 / 支付宝账单，一键套用分类规则"
+        subtitle="导入微信 / 支付宝账单，一键套用规则"
         action={
-          <div className="flex shrink-0 items-center gap-1.5">
-            <Link
-              href="/bills/rules"
-              className="rounded-full bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200"
-            >
-              规则定义
-            </Link>
-            <Link
-              href="/bills/stats"
-              className="rounded-full bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200"
-            >
-              数据统计
-            </Link>
-          </div>
+          <Link
+            href="/bills/rules"
+            className="shrink-0 rounded-full bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 active:bg-slate-200"
+          >
+            规则定义
+          </Link>
         }
       />
 
-      <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-3 px-4 pb-4 md:px-6 lg:grid lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-stretch lg:gap-5">
-        {/* 左栏：导入入口 + 一键分类 */}
-        <div className="flex max-h-[48dvh] shrink-0 flex-col gap-3 overflow-y-auto pr-0.5 lg:max-h-none lg:min-h-0 lg:flex-1">
-          {loadError && (
-            <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
-              <span className="flex-1">{loadError}</span>
-              <button
-                type="button"
-                onClick={() => void loadInitial()}
-                className="shrink-0 rounded-full bg-amber-200 px-2.5 py-0.5 text-xs font-bold text-amber-900"
-              >
-                重试
-              </button>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-2">
-            {(Object.keys(SOURCE_META) as BillSource[]).map((source) => {
-              const meta = SOURCE_META[source]
-              return (
-                <button
-                  key={source}
-                  type="button"
-                  disabled={busy}
-                  onClick={() => {
-                    pendingSource.current = source
-                    inputRef.current?.click()
-                  }}
-                  className={`flex flex-col items-start gap-1 rounded-2xl px-4 py-3 text-left text-white transition-colors disabled:opacity-60 ${meta.className}`}
-                >
-                  <span className="text-sm font-bold md:text-base">{meta.label}</span>
-                  <span className="hidden text-[11px] leading-snug opacity-90 sm:block">{meta.hint}</span>
-                </button>
-              )
-            })}
+      <div className="mx-auto w-full max-w-3xl px-4 md:px-6">
+        {loadError && (
+          <div className="mb-3 flex items-start gap-2 rounded-xl bg-amber-50 px-4 py-2.5 text-sm font-medium text-amber-700">
+            <span className="flex-1">{loadError}</span>
+            <button
+              type="button"
+              onClick={() => void loadInitial()}
+              className="shrink-0 rounded-full bg-amber-200 px-2.5 py-0.5 text-xs font-bold text-amber-900"
+            >
+              重试
+            </button>
           </div>
-          <input
-            ref={inputRef}
-            type="file"
-            accept=".csv,.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0]
-              event.target.value = ''
-              if (file) void handleFile(pendingSource.current, file)
-            }}
-          />
+        )}
 
-          {/* 一键应用规则：页面主操作 */}
-          <button
-            type="button"
-            disabled={busy || cleaning}
-            onClick={() => void runRules()}
-            className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-500 px-4 py-5 text-base font-bold text-white shadow-lg transition-all hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-60"
-          >
-            <span aria-hidden="true">🪄</span>
-            {cleaning ? '正在应用规则…' : '一键应用规则自动分类'}
-          </button>
-
-          {(busy || cleaning) && (
-            <div className="rounded-2xl border bg-card px-4 py-3">
-              <p className="text-sm font-medium">{message || '正在处理…'}</p>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
-                {percent === null ? (
-                  <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
-                ) : (
-                  <div
-                    className="h-full rounded-full bg-primary transition-all duration-300"
-                    style={{ width: `${Math.max(percent, 4)}%` }}
-                  />
-                )}
-              </div>
-            </div>
-          )}
-
-          {error && <p className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</p>}
-
-          <p className="rounded-xl bg-muted px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-            导入按物理列映射：交易时间、交易类型、对方、商品、收/支、金额、支付方式、状态、单号、备注，
-            整行原始数据同时存入 <span className="font-mono">raw_data</span>；每 100 条一批写入{' '}
-            <span className="font-mono">bill_ods</span>。
-          </p>
+        {/* 上传区：全宽大按钮 */}
+        <div className="grid gap-2 sm:grid-cols-2">
+          {(Object.keys(SOURCE_META) as BillSource[]).map((source) => {
+            const meta = SOURCE_META[source]
+            return (
+              <button
+                key={source}
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  pendingSource.current = source
+                  inputRef.current?.click()
+                }}
+                className={`flex w-full flex-col items-start gap-1 rounded-2xl px-5 py-5 text-left text-white transition-colors disabled:opacity-60 ${meta.className}`}
+              >
+                <span className="text-base font-bold">{meta.label}</span>
+                <span className="text-xs leading-snug opacity-90">{meta.hint}</span>
+              </button>
+            )
+          })}
         </div>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".csv,.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+            event.target.value = ''
+            if (file) void handleFile(pendingSource.current, file)
+          }}
+        />
 
-        {/* 右栏：明细列表 */}
-        <section className="flex min-h-0 flex-1 flex-col gap-2">
-          <header className="flex shrink-0 items-center gap-2">
-            <h2 className="text-sm font-bold">账单明细</h2>
+        <button
+          type="button"
+          disabled={busy || cleaning}
+          onClick={() => void runRules()}
+          className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-fuchsia-500 px-4 py-5 text-base font-bold text-white shadow-lg active:from-violet-600 active:to-fuchsia-600 disabled:opacity-60"
+        >
+          <span aria-hidden="true">🪄</span>
+          {cleaning ? '正在应用规则…' : '一键应用规则自动分类'}
+        </button>
+
+        {(busy || cleaning) && (
+          <div className="mt-3 rounded-2xl border bg-card px-4 py-3">
+            <p className="text-sm font-medium">{message || '正在处理…'}</p>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+              {percent === null ? (
+                <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+              ) : (
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-300"
+                  style={{ width: `${Math.max(percent, 4)}%` }}
+                />
+              )}
+            </div>
+          </div>
+        )}
+
+        {error && <p className="mt-3 rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</p>}
+
+        {/* 明细卡片流 */}
+        <section className="mt-6">
+          <header className="mb-2 flex items-center gap-2">
+            <h2 className="text-base font-bold">账单明细</h2>
             <span className="text-xs text-muted-foreground">
               {selectedBatch ? '本批次' : '最近'} {rows.length} 条
             </span>
-            <Link href="/bills/rules" className="ml-auto text-xs font-semibold text-primary">
-              管理分类规则
+            <Link href="/bills/stats" className="ml-auto text-xs font-semibold text-primary">
+              看统计
             </Link>
           </header>
 
           {batches.length > 0 && (
-            <div className="flex shrink-0 gap-1.5 overflow-x-auto pb-0.5">
+            <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-2">
               <button
                 type="button"
                 onClick={() => void changeBatch('')}
                 className={[
-                  'shrink-0 rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+                  'shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
                   !selectedBatch
                     ? 'border-primary bg-primary/10 text-primary'
-                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
+                    : 'border-slate-200 bg-white text-slate-600',
                 ].join(' ')}
               >
                 全部批次
@@ -403,40 +450,51 @@ export function BillsClient() {
                   type="button"
                   onClick={() => void changeBatch(batch.batchId)}
                   className={[
-                    'flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+                    'flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors',
                     selectedBatch === batch.batchId
                       ? 'border-primary bg-primary/10 text-primary'
-                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50',
+                      : 'border-slate-200 bg-white text-slate-600',
                   ].join(' ')}
                 >
                   <span>{SOURCE_META[batch.source as BillSource]?.short ?? batch.source}</span>
                   <span className="tabular-nums">{batch.count}</span>
-                  <span className="font-mono text-[10px] opacity-70">
-                    {batch.createdAt ? bjDateTime(batch.createdAt) : batch.batchId}
-                  </span>
                 </button>
               ))}
             </div>
           )}
 
           {listLoading ? (
-            <p className="flex-1 px-4 py-10 text-center text-sm text-muted-foreground">正在读取账单…</p>
+            <p className="py-10 text-center text-sm text-muted-foreground">正在读取账单…</p>
           ) : rows.length === 0 ? (
-            <p className="flex-1 px-4 py-10 text-center text-sm text-muted-foreground">
+            <p className="py-10 text-center text-sm text-muted-foreground">
               {batches.length === 0
                 ? '还没有导入记录，点上面的按钮选择账单文件吧'
                 : '这个批次里没有数据'}
             </p>
           ) : (
-            <BillDetailTable rows={rows} categories={categories} onAssign={(id, categoryId) => void assignCategory(id, categoryId)} />
+            <ul className="grid gap-2 md:grid-cols-2">
+              {rows.map((row) => (
+                <BillCard
+                  key={row.id}
+                  row={row}
+                  categories={categories}
+                  onAssign={(id, categoryId) => void assignCategory(id, categoryId)}
+                />
+              ))}
+            </ul>
           )}
 
           {rows.length > 0 && (
-            <p className="shrink-0 text-[11px] text-muted-foreground">
-              按交易时间倒序，最多展示 {PAGE_LIMIT} 条；未分类的可在「分类」列手动选择。
+            <p className="mt-2 text-xs text-muted-foreground">
+              按交易时间倒序，最多展示 {PAGE_LIMIT} 条；「待分类」下拉可手动指定分类。
             </p>
           )}
         </section>
+
+        <p className="mt-4 rounded-xl bg-muted px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+          导入按物理列映射：交易时间、交易类型、对方、商品、收/支、金额、支付方式、状态、单号、备注，
+          整行原始数据同时存入 raw_data；每 100 条一批写入 bill_ods。
+        </p>
       </div>
     </div>
   )
