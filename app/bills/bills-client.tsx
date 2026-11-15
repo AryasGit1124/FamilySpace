@@ -4,6 +4,8 @@ import { useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { PageHeader } from '@/components/page-header'
 import {
+  bjDateTime,
+  bjDayKey,
   categoryOf,
   expenseByCategory,
   parseBillCsv,
@@ -43,7 +45,7 @@ function yuan(value: number): string {
 
 /** 「2026-01-05T12:30:45+08:00」→「2026-01-05 12:30」 */
 function dayLabel(occurredAt: string): string {
-  return occurredAt.slice(0, 16).replace('T', ' ')
+  return bjDateTime(occurredAt)
 }
 
 /**
@@ -74,7 +76,7 @@ export function BillsClient({ bills }: { bills: BillRow[] }) {
   )
 
   const periodBills = useMemo(
-    () => bills.filter((row) => row.occurred_at.slice(0, prefix.length) === prefix),
+    () => bills.filter((row) => bjDayKey(row.occurred_at).startsWith(prefix)),
     [bills, prefix],
   )
 

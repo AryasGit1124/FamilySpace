@@ -154,6 +154,30 @@ export type BillRecord = {
   category: string | null
 }
 
+const pad2 = (value: number) => String(value).padStart(2, '0')
+
+/**
+ * ISO 时间 → 北京时间日期 key（YYYY-MM-DD）。
+ * 数据库 timestamptz 返回的是 UTC（如 2026-01-05T04:30:45+00:00），
+ * 直接切字符串会把凌晨的账单算到前一天 / 上一月，这里统一换算到 +08:00。
+ */
+export function bjDayKey(iso: string): string {
+  const time = Date.parse(iso)
+  if (Number.isNaN(time)) return iso.slice(0, 10)
+  const d = new Date(time + 8 * 60 * 60 * 1000)
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`
+}
+
+/** ISO 时间 → 北京时间「YYYY-MM-DD HH:mm」 */
+export function bjDateTime(iso: string): string {
+  const time = Date.parse(iso)
+  if (Number.isNaN(time)) return iso.slice(0, 16).replace('T', ' ')
+  const d = new Date(time + 8 * 60 * 60 * 1000)
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())} ${pad2(
+    d.getUTCHours(),
+  )}:${pad2(d.getUTCMinutes())}`
+}
+
 /** 分类名兜底：空分类统一归入「未分类」 */
 export function categoryOf(row: Pick<BillRecord, 'category'>): string {
   return row.category?.trim() || '未分类'
@@ -164,7 +188,7 @@ export function sumBills(rows: readonly BillRecord[], prefix: string) {
   let income = 0
   let expense = 0
   for (const row of rows) {
-    if (row.occurred_at.slice(0, prefix.length) !== prefix) continue
+    if (!bjDayKey(row.occurred_at).startsWith(prefix)) continue
     const amount = Number(row.amount) || 0
     if (row.direction === 'income') income += amount
     else if (row.direction === 'expense') expense += amount
@@ -177,7 +201,7 @@ export function expenseByCategory(rows: readonly BillRecord[], prefix: string) {
   const map = new Map<string, number>()
   let total = 0
   for (const row of rows) {
-    if (row.occurred_at.slice(0, prefix.length) !== prefix) continue
+    if (!bjDayKey(row.occurred_at).startsWith(prefix)) continue
     if (row.direction !== 'expense') continue
     const amount = Number(row.amount) || 0
     const key = categoryOf(row)
