@@ -38,7 +38,8 @@ import {
 type Phase = 'idle' | 'parsing' | 'saving'
 
 /** 单次渲染上限，超出时提示用筛选缩小范围 */
-const RENDER_LIMIT = 300
+/** 列表每次追加渲染的条数（避免一次渲染上千行拖慢手机） */
+const PAGE_STEP = 100
 
 const SOURCE_META: Record<
   BillSource,
@@ -529,9 +530,12 @@ export function BillsClient() {
       .map(([key, group]) => ({ key, ...group }))
   }, [filteredRows])
 
-  /** 渲染上限：按分组顺序取前 RENDER_LIMIT 条 */
+  /** 列表当前渲染条数：首屏 100 条，可点「加载更多」追加 */
+  const [visibleCount, setVisibleCount] = useState(PAGE_STEP)
+
+  /** 渲染上限：按分组顺序取前 visibleCount 条 */
   const visibleGroups = useMemo(() => {
-    let remaining = RENDER_LIMIT
+    let remaining = visibleCount
     const result: typeof groupedMonths = []
     for (const group of groupedMonths) {
       if (remaining <= 0) break
@@ -540,7 +544,7 @@ export function BillsClient() {
       remaining -= bills.length
     }
     return result
-  }, [groupedMonths])
+  }, [groupedMonths, visibleCount])
 
   const handleFile = async (source: BillSource, file: File) => {
     if (busy) return
@@ -950,13 +954,19 @@ export function BillsClient() {
             </div>
           )}
 
-          {filteredRows.length > RENDER_LIMIT && (
-            <p className="whitespace-normal break-words py-2 text-center text-xs text-muted-foreground">
-              仅显示最近 {RENDER_LIMIT} 条，请用上方筛选缩小范围（共 {filteredRows.length} 条）
-            </p>
+          {filteredRows.length > visibleCount && (
+            <div className="py-3 text-center">
+              <button
+                type="button"
+                onClick={() => setVisibleCount((count) => count + PAGE_STEP)}
+                className="h-10 w-full max-w-xs rounded-full border border-gray-200 bg-white text-sm font-medium text-gray-600 active:bg-gray-50"
+              >
+                加载更多（已显示 {visibleCount} / 共 {filteredRows.length} 条）
+              </button>
+            </div>
           )}
 
-          {filteredRows.length > 0 && filteredRows.length <= RENDER_LIMIT && (
+          {filteredRows.length > 0 && filteredRows.length <= visibleCount && (
             <p className="py-2 text-xs text-muted-foreground">
               按交易时间倒序、按月分组；筛选基于已加载的全部账单。「待分类」可手动指定分类。
             </p>

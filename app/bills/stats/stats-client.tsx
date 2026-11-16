@@ -16,21 +16,27 @@ import {
 import { PageHeader } from '@/components/page-header'
 import { ChevronDown } from 'lucide-react'
 import {
-  aggregateCategoryShare,
-  aggregateTimeBuckets,
   billDirectionOf,
   bjDateTime,
   categorySubtreeIds,
   creatorTagClass,
   describeBillError,
-  filterBillsByCategory,
   isMissingBillTable,
   sourceTag,
   type Granularity,
   type StatBill,
   type StatCategory,
 } from '@/lib/bills'
-import { fetchBillCategories, fetchBillsForStats } from '@/lib/supabase-queries'
+import {
+  fetchBillCategories,
+  fetchBillStatBuckets,
+  fetchBillStatCategories,
+  fetchBillStatCreators,
+  fetchBillStatYears,
+  fetchStatBillsPage,
+  type StatBucketRow,
+  type StatCategoryRow,
+} from '@/lib/supabase-queries'
 import { cn } from '@/lib/utils'
 
 const PIE_COLORS = [
@@ -63,6 +69,14 @@ function bucketLabel(key: string, granularity: Granularity): string {
 
 const money = (value: number) => `¥${value.toFixed(2)}`
 
+/** 图表最多渲染的数据点（超出只展示最近的部分，汇总额仍为全量） */
+const CHART_BUCKET_LIMIT = 180
+
+/** 明细列表每页条数 */
+const DETAIL_PAGE_SIZE = 50
+
+const currentYear = () => String(new Date().getFullYear())
+
 /** 金额筛选类型 */
 type AmountFilterType = 'all' | 'nonzero' | 'gte100' | 'gte500' | 'custom'
 
@@ -88,8 +102,10 @@ const amountLabel = (type: AmountFilterType, min: string, max: string) => {
 
 
 export function StatsClient() {
-  const [bills, setBills] = useState<StatBill[]>([])
   const [categories, setCategories] = useState<StatCategory[]>([])
+  const [years, setYears] = useState<string[]>([])
+  const [year, setYear] = useState<string>(currentYear)
+  const [creatorNames, setCreatorNames] = useState<string[]>([])
   const [granularity, setGranularity] = useState<Granularity>('month')
   const [categoryId, setCategoryId] = useState('')
   const [creatorFilter, setCreatorFilter] = useState('')
@@ -98,35 +114,42 @@ export function StatsClient() {
   const [minAmount, setMinAmount] = useState('')
   const [maxAmount, setMaxAmount] = useState('')
   const [amountOpen, setAmountOpen] = useState(false)
+
+  /** 数据库聚合结果（几十行，不再拉全量明细） */
+  const [bucketRows, setBucketRows] = useState<StatBucketRow[]>([])
+  const [categoryRows, setCategoryRows] = useState<StatCategoryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError('')
+  /** 明细分页（仅「按日」维度展示） */
+  const [detailRows, setDetailRows] = useState<StatBill[]>([])
+  const [detailHasMore, setDetailHasMore] = useState(false)
+  const [detailLoading, setDetailLoading] = useState(false)
+
+  const loadBase = useCallback(async () => {
     try {
-      const [billRows, categoryList] = await Promise.all([
-        fetchBillsForStats(),
+      const [categoryList, yearList, creatorList] = await Promise.all([
         fetchBillCategories(),
+        fetchBillStatYears(),
+        fetchBillStatCreators(),
       ])
-      setBills(billRows)
       setCategories(categoryList)
+      setYears(yearList.length > 0 ? yearList : [currentYear()])
+      setCreatorNames(creatorList)
     } catch (err) {
       const detail = describeBillError(err)
-      console.error('[BillsStats] 读取统计数据失败:', detail, err)
+      console.error('[BillsStats] 读取基础数据失败:', detail, err)
       setError(
         isMissingBillTable(err)
           ? '账单表还没创建：请先执行 scripts/create-bill-ods.sql'
           : `读取统计数据失败：${detail}`,
       )
-    } finally {
-      setLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    void load()
-  }, [load])
+    void loadBase()
+  }, [loadBase])
 
   const categoryById = useMemo(
     () => new Map(categories.map((item) => [item.id, item])),
@@ -141,68 +164,158 @@ export function StatsClient() {
     [categories],
   )
 
-  /** 登记人筛选后（空 = 全部） */
-  const creatorBills = useMemo(
-    () =>
-      creatorFilter ? bills.filter((bill) => (bill.creator_name ?? '') === creatorFilter) : bills,
-    [bills, creatorFilter],
-  )
+  /** 分类筛选范围：选一级 = 整棵子树；选二级 = 仅该分类 */
+  const filterCategoryIds = useMemo(() => {
+    if (!categoryId) return null
+    const selected = categoryById.get(categoryId)
+    if (!selected) return null
+    if (selected.parent_id) return [selected.id]
+    return [...categorySubtreeIds(categories, selected.id)]
+  }, [categoryId, categoryById, categories])
 
-  const creatorNames = useMemo(() => {
-    const names = new Set<string>()
-    for (const bill of bills) if (bill.creator_name) names.add(bill.creator_name)
-    return [...names].sort()
-  }, [bills])
+  /** 饼图范围：选二级时看同一父级下的兄弟分类 */
+  const shareCategoryIds = useMemo(() => {
+    if (!categoryId) return null
+    const selected = categoryById.get(categoryId)
+    if (!selected) return null
+    return [...categorySubtreeIds(categories, selected.parent_id ?? selected.id)]
+  }, [categoryId, categoryById, categories])
 
-  /** 金额筛选后的账单：后续所有统计与图表都基于它 */
-  const amountBills = useMemo(() => {
-    if (amountType === 'all') return creatorBills
+  /** 金额筛选 → RPC 参数 */
+  const amountParams = useMemo(() => {
     const min = minAmount.trim() === '' ? null : Number(minAmount)
     const max = maxAmount.trim() === '' ? null : Number(maxAmount)
-    return creatorBills.filter((bill) => {
-      const value = Number(bill.amount ?? 0)
-      if (amountType === 'nonzero' && value === 0) return false
-      if (amountType === 'gte100' && value < 100) return false
-      if (amountType === 'gte500' && value < 500) return false
-      if (amountType === 'custom') {
-        if (min !== null && !Number.isNaN(min) && value < min) return false
-        if (max !== null && !Number.isNaN(max) && value > max) return false
+    const validMin = min !== null && !Number.isNaN(min) ? min : null
+    const validMax = max !== null && !Number.isNaN(max) ? max : null
+    if (amountType === 'nonzero') return { minAmount: null, maxAmount: null, excludeZero: true }
+    if (amountType === 'gte100') return { minAmount: 100, maxAmount: null, excludeZero: false }
+    if (amountType === 'gte500') return { minAmount: 500, maxAmount: null, excludeZero: false }
+    if (amountType === 'custom') {
+      return { minAmount: validMin, maxAmount: validMax, excludeZero: false }
+    }
+    return { minAmount: null, maxAmount: null, excludeZero: false }
+  }, [amountType, minAmount, maxAmount])
+
+  /** 「按年」维度天然跨年份，此时不套用年份条件 */
+  const effectiveYear = granularity === 'year' ? null : year
+
+  const filterParams = useMemo(
+    () => ({
+      year: effectiveYear,
+      categoryIds: filterCategoryIds,
+      creator: creatorFilter,
+      ...amountParams,
+    }),
+    [effectiveYear, filterCategoryIds, creatorFilter, amountParams],
+  )
+
+  /** 聚合数据：时间桶 + 分类占比，均由数据库计算 */
+  const loadAggregates = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const [bucketData, categoryData] = await Promise.all([
+        fetchBillStatBuckets({ ...filterParams, granularity }),
+        fetchBillStatCategories({ ...filterParams, categoryIds: shareCategoryIds }),
+      ])
+      setBucketRows(bucketData)
+      setCategoryRows(categoryData)
+    } catch (err) {
+      const detail = describeBillError(err)
+      console.error('[BillsStats] 读取统计数据失败:', detail, err)
+      setError(`读取统计数据失败：${detail}`)
+    } finally {
+      setLoading(false)
+    }
+  }, [filterParams, granularity, shareCategoryIds])
+
+  useEffect(() => {
+    void loadAggregates()
+  }, [loadAggregates])
+
+  /** 明细分页：服务端每次 50 条 */
+  const loadDetailPage = useCallback(
+    async (offset: number) => {
+      setDetailLoading(true)
+      try {
+        const rows = await fetchStatBillsPage({
+          ...filterParams,
+          offset,
+          limit: DETAIL_PAGE_SIZE,
+        })
+        setDetailRows((prev) => (offset === 0 ? rows : [...prev, ...rows]))
+        setDetailHasMore(rows.length === DETAIL_PAGE_SIZE)
+      } catch (err) {
+        const detail = describeBillError(err)
+        console.error('[BillsStats] 读取明细失败:', detail, err)
+        setError(`读取明细失败：${detail}`)
+      } finally {
+        setDetailLoading(false)
       }
-      return true
-    })
-  }, [creatorBills, amountType, minAmount, maxAmount])
-
-  /** 分类筛选后（选一级分类含全部子分类）的账单 */
-  const scopedBills = useMemo(
-    () => filterBillsByCategory(amountBills, categories, categoryId),
-    [amountBills, categories, categoryId],
+    },
+    [filterParams],
   )
 
-  /** 时间维度汇总：纵轴收入 / 支出 */
+  useEffect(() => {
+    if (granularity !== 'day') return
+    setDetailRows([])
+    setDetailHasMore(false)
+    void loadDetailPage(0)
+  }, [granularity, loadDetailPage])
+
+  const refresh = useCallback(async () => {
+    await loadBase()
+    await loadAggregates()
+    if (granularity === 'day') await loadDetailPage(0)
+  }, [loadBase, loadAggregates, loadDetailPage, granularity])
+
+  /** 时间桶：RPC 已按 key 升序返回 */
   const buckets = useMemo(
-    () => aggregateTimeBuckets(scopedBills, granularity),
-    [scopedBills, granularity],
+    () =>
+      bucketRows.map((row) => ({
+        key: row.bucket,
+        income: row.total_income,
+        expense: row.total_expense,
+        net: row.total_income - row.total_expense,
+      })),
+    [bucketRows],
   )
 
-  /** 饼图：支出按二级分类占比；选二级分类时看同一父级下的兄弟分类 */
+  /** 饼图：数据库按分类聚合，这里只做分类名 / Emoji 映射 */
   const shares = useMemo(() => {
     const selected = categoryId ? categoryById.get(categoryId) : undefined
-    if (!selected) return aggregateCategoryShare(scopedBills, categories)
+    const scopeId = selected ? (selected.parent_id ?? selected.id) : undefined
+    return categoryRows
+      .map((row) => {
+        const category = row.category_id ? categoryById.get(row.category_id) : undefined
+        let name = '未分类'
+        let emoji = '❓'
+        if (category) {
+          const parent = category.parent_id ? categoryById.get(category.parent_id) : undefined
+          if (parent) {
+            name = category.name
+            emoji = category.emoji
+          } else {
+            name = scopeId && category.id === scopeId ? `${category.name}（未细分）` : category.name
+            emoji = category.emoji
+          }
+        }
+        return { name, emoji, value: Number(row.total_expense) }
+      })
+      .filter((share) => share.value > 0)
+  }, [categoryRows, categoryById, categoryId])
 
-    const scopeId = selected.parent_id ?? selected.id
-    const scopeIds = categorySubtreeIds(categories, scopeId)
-    const source = amountBills.filter((bill) => !!bill.category_id && scopeIds.has(bill.category_id))
-    return aggregateCategoryShare(source, categories, scopeId)
-  }, [amountBills, categories, categoryById, categoryId, scopedBills])
+  /** 图表最多展示的点数：按日统计多年数据时避免一次渲染上千根柱子 */
+  const chartData = useMemo(() => {
+    const shown =
+      buckets.length > CHART_BUCKET_LIMIT ? buckets.slice(-CHART_BUCKET_LIMIT) : buckets
+    return shown.map((bucket) => ({
+      ...bucket,
+      label: bucketLabel(bucket.key, granularity),
+    }))
+  }, [buckets, granularity])
 
-  const chartData = useMemo(
-    () =>
-      buckets.map((bucket) => ({
-        ...bucket,
-        label: bucketLabel(bucket.key, granularity),
-      })),
-    [buckets, granularity],
-  )
+  const chartTruncated = buckets.length > CHART_BUCKET_LIMIT
 
   /** 饼图只保留 Top 5，其余合并为「其他」 */
   const pieData = useMemo(() => {
@@ -222,16 +335,6 @@ export function StatsClient() {
         { income: 0, expense: 0 },
       ),
     [buckets],
-  )
-
-  /** 按日明细：直接展示交易，按时间倒序 */
-  const dayRows = useMemo(
-    () =>
-      [...scopedBills]
-        .filter((bill) => billDirectionOf(bill.direction) !== null)
-        .sort((a, b) => (b.trade_time ?? '').localeCompare(a.trade_time ?? ''))
-        .slice(0, 300),
-    [scopedBills],
   )
 
   const categoryLabel = useCallback(
@@ -256,7 +359,7 @@ export function StatsClient() {
         action={
           <button
             type="button"
-            onClick={() => void load()}
+            onClick={() => void refresh()}
             disabled={loading}
             className="shrink-0 rounded-full bg-slate-100 px-4 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-200 disabled:opacity-60"
           >
@@ -271,7 +374,7 @@ export function StatsClient() {
             <span className="flex-1">{error}</span>
             <button
               type="button"
-              onClick={() => void load()}
+              onClick={() => void refresh()}
               className="shrink-0 rounded-full bg-amber-200 px-2.5 py-0.5 text-xs font-bold text-amber-900"
             >
               重试
@@ -298,6 +401,21 @@ export function StatsClient() {
               </button>
             ))}
           </div>
+
+          {granularity !== 'year' && (
+            <select
+              value={year}
+              onChange={(event) => setYear(event.target.value)}
+              aria-label="选择年份"
+              className="min-w-0 max-w-full flex-1 rounded-full border bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary sm:flex-none"
+            >
+              {years.map((item) => (
+                <option key={item} value={item}>
+                  {item}年
+                </option>
+              ))}
+            </select>
+          )}
 
           <select
             value={categoryId}
@@ -373,6 +491,11 @@ export function StatsClient() {
         <div className="grid w-full gap-3 md:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
           <section className="w-full min-w-0 rounded-2xl border bg-card p-3 shadow-sm">
             <h2 className="mb-1 text-sm font-bold">收入 / 支出</h2>
+            {chartTruncated && (
+              <p className="mb-1 text-[11px] text-muted-foreground">
+                数据点较多，图表仅展示最近 {CHART_BUCKET_LIMIT} 期；汇总与明细仍包含全部数据。
+              </p>
+            )}
             {loading ? (
               <p className="py-16 text-center text-sm text-muted-foreground">正在读取…</p>
             ) : chartData.length === 0 ? (
@@ -389,8 +512,8 @@ export function StatsClient() {
                       labelStyle={{ fontSize: 12 }}
                       contentStyle={{ fontSize: 12, borderRadius: 12 }}
                     />
-                    <Bar dataKey="income" name="收入" stackId="sum" fill="#22c55e" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="expense" name="支出" stackId="sum" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="income" name="收入" stackId="sum" fill="#22c55e" radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                    <Bar dataKey="expense" name="支出" stackId="sum" fill="#ef4444" radius={[4, 4, 0, 0]} isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -425,6 +548,7 @@ export function StatsClient() {
                         innerRadius={42}
                         outerRadius={72}
                         paddingAngle={1}
+                        isAnimationActive={false}
                       >
                         {pieData.map((entry) => (
                           <Cell key={entry.name} fill={entry.fill} />
@@ -463,18 +587,19 @@ export function StatsClient() {
               {granularity === 'day' ? '交易明细' : granularity === 'month' ? '月度汇总' : '年度汇总'}
             </h2>
             <span className="text-xs text-muted-foreground">
-              {granularity === 'day' ? `${dayRows.length} 条（最多 300）` : `${buckets.length} 期`}
+              {granularity === 'day' ? `已加载 ${detailRows.length} 条` : `${buckets.length} 期`}
             </span>
           </div>
 
           {granularity === 'day' ? (
-            dayRows.length === 0 ? (
+            detailRows.length === 0 ? (
               <p className="w-full rounded-2xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">
-                没有符合筛选条件的交易
+                {detailLoading ? '正在加载…' : '没有符合筛选条件的交易'}
               </p>
             ) : (
-              <ul className="w-full divide-y divide-gray-100 overflow-hidden rounded-xl border border-gray-100 bg-white">
-                {dayRows.map((bill) => {
+              <>
+                <ul className="w-full divide-y divide-gray-100 overflow-hidden rounded-xl border border-gray-100 bg-white">
+                {detailRows.map((bill) => {
                   const direction = billDirectionOf(bill.direction)
                   const category = bill.category_id ? categoryById.get(bill.category_id) : undefined
                   const source = sourceTag(bill.source)
@@ -530,6 +655,21 @@ export function StatsClient() {
                   )
                 })}
               </ul>
+                <div className="mt-3 text-center">
+                  {detailHasMore ? (
+                    <button
+                      type="button"
+                      onClick={() => void loadDetailPage(detailRows.length)}
+                      disabled={detailLoading}
+                      className="h-10 w-full max-w-xs rounded-full border border-gray-200 bg-white text-sm font-medium text-gray-600 active:bg-gray-50 disabled:opacity-60"
+                    >
+                      {detailLoading ? '加载中…' : `加载更多（每次 ${DETAIL_PAGE_SIZE} 条）`}
+                    </button>
+                  ) : (
+                    <p className="py-2 text-xs text-muted-foreground">没有更多了</p>
+                  )}
+                </div>
+              </>
             )
           ) : buckets.length === 0 ? (
             <p className="w-full rounded-2xl border border-dashed bg-card px-4 py-10 text-center text-sm text-muted-foreground">

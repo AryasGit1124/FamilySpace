@@ -906,7 +906,7 @@ export async function fetchOdsBillsAll(params?: {
       supabase
         .from('bill_ods')
         .select(
-          'id, source, batch_id, category_id, trade_time, trade_type, counterparty, account, commodity, direction, amount, pay_method, status, trade_no, merchant_no, remark, raw_data, creator_id, creator_name, created_at',
+          'id, source, batch_id, category_id, trade_time, trade_type, counterparty, commodity, direction, amount, creator_name',
         ),
       familyId,
     )
@@ -925,28 +925,135 @@ export async function fetchOdsBillsAll(params?: {
   return rows
 }
 
-/** 统计页：只取聚合需要的列，分页取全量（最多 2 万条） */
-export async function fetchBillsForStats(): Promise<StatBill[]> {
+/** 统计页聚合结果：一个时间桶的收支 */
+export type StatBucketRow = {
+  bucket: string
+  total_expense: number
+  total_income: number
+}
+
+/** 统计页分类聚合结果 */
+export type StatCategoryRow = {
+  category_id: string | null
+  total_expense: number
+}
+
+/** 统计页筛选参数（与 RPC / 明细分页共用） */
+export type StatFilterParams = {
+  year: string | null
+  categoryIds?: string[] | null
+  creator?: string
+  minAmount?: number | null
+  maxAmount?: number | null
+  excludeZero?: boolean
+}
+
+/** 可选年份（用于年份下拉，避免拉全量明细） */
+export async function fetchBillStatYears(): Promise<string[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
-  const pageSize = 1000
-  const rows: StatBill[] = []
+  if (!familyId) return []
+  const { data, error } = await supabase.rpc('get_bill_years', { p_family_id: familyId })
+  if (error) throw error
+  return ((data ?? []) as { year_str: string }[]).map((row) => row.year_str)
+}
 
-  for (let from = 0; from < 20000; from += pageSize) {
-    const { data, error } = await scoped(
-      supabase
-        .from('bill_ods')
-        .select('id, source, trade_time, commodity, amount, direction, category_id, creator_name'),
-      familyId,
-    )
-      .order('trade_time', { ascending: false, nullsFirst: false })
-      .range(from, from + pageSize - 1)
+/** 可选登记人 */
+export async function fetchBillStatCreators(): Promise<string[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  if (!familyId) return []
+  const { data, error } = await supabase.rpc('get_bill_creators', { p_family_id: familyId })
+  if (error) throw error
+  return ((data ?? []) as { creator: string }[]).map((row) => row.creator)
+}
 
-    if (error) throw error
-    rows.push(...((data ?? []) as StatBill[]))
-    if (!data || data.length < pageSize) break
+/** 统计页时间桶聚合（数据库端计算，前端只拿几十行） */
+export async function fetchBillStatBuckets(
+  params: StatFilterParams & { granularity: 'day' | 'month' | 'year' },
+): Promise<StatBucketRow[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  if (!familyId) return []
+
+  const { data, error } = await supabase.rpc('get_bill_stats', {
+    p_family_id: familyId,
+    p_year: params.year ? Number(params.year) : null,
+    p_granularity: params.granularity,
+    p_category_ids: params.categoryIds && params.categoryIds.length > 0 ? params.categoryIds : null,
+    p_creator: params.creator || null,
+    p_min_amount: params.minAmount ?? null,
+    p_max_amount: params.maxAmount ?? null,
+    p_exclude_zero: params.excludeZero ?? false,
+  })
+
+  if (error) throw error
+  return ((data ?? []) as StatBucketRow[]).map((row) => ({
+    bucket: row.bucket,
+    total_expense: Number(row.total_expense),
+    total_income: Number(row.total_income),
+  }))
+}
+
+/** 统计页支出分类聚合（饼图） */
+export async function fetchBillStatCategories(
+  params: StatFilterParams,
+): Promise<StatCategoryRow[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  if (!familyId) return []
+
+  const { data, error } = await supabase.rpc('get_bill_category_summary', {
+    p_family_id: familyId,
+    p_year: params.year ? Number(params.year) : null,
+    p_category_ids: params.categoryIds && params.categoryIds.length > 0 ? params.categoryIds : null,
+    p_creator: params.creator || null,
+    p_min_amount: params.minAmount ?? null,
+    p_max_amount: params.maxAmount ?? null,
+    p_exclude_zero: params.excludeZero ?? false,
+  })
+
+  if (error) throw error
+  return ((data ?? []) as StatCategoryRow[]).map((row) => ({
+    category_id: row.category_id,
+    total_expense: Number(row.total_expense),
+  }))
+}
+
+/** 统计页明细：服务端分页，每次 50 条 */
+export async function fetchStatBillsPage(
+  params: StatFilterParams & { offset: number; limit: number },
+): Promise<StatBill[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+
+  let query = scoped(
+    supabase
+      .from('bill_ods')
+      .select('id, source, trade_time, commodity, amount, direction, category_id, creator_name'),
+    familyId,
+  ).not('direction', 'is', null)
+
+  if (params.year) {
+    query = query
+      .gte('trade_time', `${params.year}-01-01T00:00:00+08:00`)
+      .lte('trade_time', `${params.year}-12-31T23:59:59.999+08:00`)
   }
-  return rows
+  if (params.categoryIds && params.categoryIds.length > 0) {
+    query = query.in('category_id', params.categoryIds)
+  }
+  if (params.creator) query = query.eq('creator_name', params.creator)
+  if (params.excludeZero) query = query.neq('amount', 0)
+  if (typeof params.minAmount === 'number') query = query.gte('amount', params.minAmount)
+  if (typeof params.maxAmount === 'number') query = query.lte('amount', params.maxAmount)
+
+  const { data, error } = await query
+    .order('trade_time', { ascending: false, nullsFirst: false })
+    .order('id', { ascending: true })
+    .range(params.offset, params.offset + params.limit - 1)
+
+  if (error) throw error
+  return (data ?? []) as StatBill[]
 }
 
 /** 未分类账单（只取匹配需要的列）：分页取全量，避免默认 1000 行上限 */
