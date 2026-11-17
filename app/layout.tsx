@@ -49,12 +49,13 @@ export default function RootLayout({
       <head>
         {/*
           部署后旧页面缓存仍引用上一版 chunk，会报 ChunkLoadError / 404 导致整页 JS 失效。
-          这里在 HTML 里内联一段兜底脚本：一旦捕获到 chunk 加载失败就自动刷新一次（30 秒内只刷一次，避免死循环）。
+          这里在 HTML 里内联一段兜底脚本：捕获到 chunk 加载失败就带版本参数重新拉一次 HTML（30 秒内只刷一次）。
+          带参数是为了绕过 CDN 对 index.html 的缓存，拿到与新 chunk 匹配的 HTML。
         */}
         <script
           dangerouslySetInnerHTML={{
             __html:
-              "(function(){try{var k='chunk-reload-at';function r(){var last=+(sessionStorage.getItem(k)||0);if(Date.now()-last<30000)return;sessionStorage.setItem(k,String(Date.now()));location.reload();}function m(t){return /ChunkLoadError|Loading chunk |Failed to fetch dynamically imported module|Importing a module script failed/i.test(t||'');}window.addEventListener('error',function(e){var t=(e&&e.message)||'';var el=e&&e.target;if(el&&el.tagName==='SCRIPT'&&el.src)t+=' chunk';if(m(t))r();},true);window.addEventListener('unhandledrejection',function(e){var x=e&&e.reason;if(m(((x&&x.name)||'')+' '+((x&&x.message)||'')))r();});}catch(_){}})();",
+              "(function(){try{var k='chunk-reload-at';function r(){var last=+(sessionStorage.getItem(k)||0);if(Date.now()-last<30000)return;sessionStorage.setItem(k,String(Date.now()));try{var u=new URL(location.href);u.searchParams.set('__v',String(Date.now()));location.replace(u.toString());}catch(_){location.reload();}}function m(t){return /ChunkLoadError|Loading chunk |Failed to fetch dynamically imported module|Importing a module script failed/i.test(t||'');}window.addEventListener('error',function(e){var t=(e&&e.message)||'';var el=e&&e.target;if(el&&el.tagName==='SCRIPT'&&el.src)t+=' chunk';if(m(t))r();},true);window.addEventListener('unhandledrejection',function(e){var x=e&&e.reason;if(m(((x&&x.name)||'')+' '+((x&&x.message)||'')))r();});}catch(_){}})();",
           }}
         />
       </head>
