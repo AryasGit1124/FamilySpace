@@ -6,6 +6,7 @@
  * 这里统一转成二维数组，再按表头把一行映射成 bill_ods 的物理列，原始行另存 raw_data。
  */
 import Papa from 'papaparse'
+import { categorySubtreeIds } from './bill-stats'
 
 export type BillSource = 'wechat' | 'alipay'
 
@@ -219,19 +220,6 @@ export type OdsBill = {
   categoryId?: string | null
 }
 
-/** 没有交易单号时的兜底去重键：分钟级时间 + 金额 + 商品说明 */
-export function billFallbackKey(
-  tradeTime: string | null,
-  amount: number | null,
-  commodity: string | null,
-): string {
-  const parsed = tradeTime ? Date.parse(tradeTime) : Number.NaN
-  const minute = Number.isNaN(parsed)
-    ? (tradeTime ?? '')
-    : new Date(parsed).toISOString().slice(0, 16)
-  return `${minute}_${amount ?? ''}_${(commodity ?? '').trim()}`
-}
-
 /** 该行所有单元格 →「表头 → 文本」，键名保持文件原样 */
 function rowToRaw(header: string[], row: unknown[]): Record<string, string> {
   const data: Record<string, string> = {}
@@ -346,9 +334,13 @@ export type StatBill = {
   id: string
   trade_time: string | null
   commodity: string | null
-  amount: number | null
+  /** 净额（原金额 - 退款） */
+  net_amount: number | null
+  /** 数据库清洗出的收支性质，优先使用 */
+  transaction_nature: 'income' | 'expense' | null
   direction: string | null
   category_id: string | null
+  subcategory_id: string | null
   creator_name: string | null
   source: string | null
 }
@@ -361,18 +353,34 @@ export type StatCategory = {
   parent_id: string | null
 }
 
-/** 收/支文案 → income / expense；「不计收支」等返回 null */
+/** 收/支文案 → income / expense；「不计收支」等返回 null（兼容中英文） */
 export function billDirectionOf(
   direction: string | null | undefined,
 ): 'income' | 'expense' | null {
   const value = (direction ?? '').trim()
-  if (value.includes('收')) return 'income'
-  if (value.includes('支')) return 'expense'
+  if (!value) return null
+  const lower = value.toLowerCase()
+  if (value.includes('不计收支') || value.includes('不计入收支')) return null
+  if (value.includes('收') || ['income', 'in', 'credit', 'refund'].includes(lower)) return 'income'
+  if (value.includes('支') || ['expense', 'out', 'debit', 'payment'].includes(lower)) return 'expense'
   return null
+}
+
+/** 是否是「不带时区」的时间串（Postgres timestamp without time zone，已是北京时间） */
+function isNaiveTimestamp(value: string): boolean {
+  const text = value.trim()
+  return (
+    /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(text) && !/(Z|[+-]\d{2}:?\d{2})$/.test(text)
+  )
 }
 
 /** 北京时间（+08:00）的日期键，不依赖浏览器时区 */
 function bjDateParts(iso: string): { year: string; month: string; day: string } | null {
+  if (isNaiveTimestamp(iso)) {
+    const matched = iso.trim().slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/)
+    if (!matched) return null
+    return { year: matched[1], month: matched[2], day: matched[3] }
+  }
   const time = Date.parse(iso)
   if (Number.isNaN(time)) return null
   const d = new Date(time + 8 * 60 * 60 * 1000)
@@ -396,24 +404,8 @@ export function bucketKeyOf(
   return parts.year
 }
 
-/** 某分类及其所有子孙分类的 id（多级分类聚合） */
-export function categorySubtreeIds(
-  categories: StatCategory[],
-  rootId: string,
-): Set<string> {
-  const ids = new Set<string>([rootId])
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const category of categories) {
-      if (category.parent_id && ids.has(category.parent_id) && !ids.has(category.id)) {
-        ids.add(category.id)
-        changed = true
-      }
-    }
-  }
-  return ids
-}
+/** 某分类及其所有子孙分类的 id（多级分类聚合），实现在 lib/bill-stats.ts */
+export { categorySubtreeIds }
 
 /** 按分类筛选：选一级分类时自动包含其所有二级分类 */
 export function filterBillsByCategory<T extends { category_id: string | null }>(
@@ -441,7 +433,7 @@ export function aggregateTimeBuckets(
     if (!key) continue
     const direction = billDirectionOf(bill.direction)
     if (!direction) continue
-    const amount = Number(bill.amount ?? 0)
+    const amount = Number(bill.net_amount ?? 0)
     if (!Number.isFinite(amount) || amount <= 0) continue
 
     const bucket = map.get(key) ?? { key, income: 0, expense: 0, net: 0 }
@@ -475,7 +467,7 @@ export function aggregateCategoryShare(
 
   for (const bill of bills) {
     if (billDirectionOf(bill.direction) !== 'expense') continue
-    const amount = Number(bill.amount ?? 0)
+    const amount = Number(bill.net_amount ?? 0)
     if (!Number.isFinite(amount) || amount <= 0) continue
 
     const category = bill.category_id ? byId.get(bill.category_id) : undefined
@@ -520,8 +512,9 @@ export function sourceTag(
   return null
 }
 
-/** ISO 时间 → 北京时间「YYYY-MM-DD HH:mm」 */
+/** ISO 时间 → 北京时间「YYYY-MM-DD HH:mm」；无时区的时间串（来自 bill_dwd）原样展示 */
 export function bjDateTime(iso: string): string {
+  if (isNaiveTimestamp(iso)) return iso.trim().slice(0, 16).replace('T', ' ')
   const time = Date.parse(iso)
   if (Number.isNaN(time)) return iso.slice(0, 16).replace('T', ' ')
   const d = new Date(time + 8 * 60 * 60 * 1000)

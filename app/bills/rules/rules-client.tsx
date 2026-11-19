@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PageHeader } from '@/components/page-header'
-import { describeBillError, isMissingBillTable } from '@/lib/bills'
+import { describeBillError, isMissingBillTable, sourceTag } from '@/lib/bills'
 import {
+  categoryIcon,
   deleteBillCategory,
   deleteBillRule,
   fetchBillCategories,
@@ -13,26 +14,73 @@ import {
   updateBillCategory,
   updateBillRule,
   type BillCategory,
-  type BillCategoryRule,
-  type BillRuleField,
+  type BillRule,
+  type BillRuleInput,
 } from '@/lib/supabase-queries'
 import { cn } from '@/lib/utils'
 
-/** 分类图标候选：都是账单里常见的场景 */
-const EMOJIS = ['🥬', '🍚', '🛒', '☕', '🍜', '🚗', '🚌', '💊', '🎓', '🏠', '👕', '🎁', '💡', '🐱', '✈️', '📱', '🧾', '💰']
+/** 规则匹配方式：全部条件满足 / 任一条件满足 */
+type BillRuleMatchType = 'all' | 'any'
 
-const FIELD_LABELS: Record<BillRuleField, string> = {
-  counterparty: '交易对方',
-  commodity: '商品说明',
-  trade_type: '交易类型/分类',
-  all: '全部',
+/** 分类图标候选：都是账单里常见的场景 */
+const ICONS = ['🥬', '🍚', '🛒', '☕', '🍜', '🚗', '🚌', '💊', '🎓', '🏠', '👕', '🎁', '💡', '🐱', '✈️', '📱', '🧾', '💰']
+
+/** 收/支类型文案（取值以库里已有数据为准） */
+const CATEGORY_TYPE_LABELS: Record<string, string> = {
+  expense: '支出',
+  income: '收入',
+  transfer: '转账',
+}
+const categoryTypeLabel = (value: string) => CATEGORY_TYPE_LABELS[value] ?? (value || '未设置')
+
+/** 规则来源：空表示不限 */
+const SOURCE_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: '不限来源' },
+  { value: 'wechat', label: '微信' },
+  { value: 'alipay', label: '支付宝' },
+  { value: 'manual', label: '手工记账' },
+]
+
+/** 规则收支方向：空表示不限 */
+const DIRECTION_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: '不限收支' },
+  { value: '支出', label: '仅支出' },
+  { value: '收入', label: '仅收入' },
+]
+
+/** 规则里的方向值兼容中英文 */
+const directionLabel = (value: string | null) => {
+  if (!value) return ''
+  const text = value.toLowerCase()
+  if (text.includes('支') || ['expense', 'out', 'debit'].includes(text)) return '支出'
+  if (text.includes('收') || ['income', 'in', 'credit'].includes(text)) return '收入'
+  return value
 }
 
-type CategoryDraft = { id?: string; name: string; emoji: string; parentId?: string | null }
+const MATCH_TYPE_LABELS: Record<string, string> = {
+  all: '全部满足',
+  any: '任一满足',
+}
+
+type CategoryDraft = {
+  id?: string
+  name: string
+  icon: string
+  categoryType: string
+  parentId?: string | null
+}
+
 type RuleDraft = {
-  keyword: string
-  field: BillRuleField
+  ruleName: string
   priority: string
+  source: string
+  direction: string
+  tradeTypePattern: string
+  counterpartyPattern: string
+  commodityPattern: string
+  matchType: BillRuleMatchType
+  amountMin: string
+  amountMax: string
   /** 所属分类：编辑时允许把规则移到另一个分类 */
   categoryId: string
 }
@@ -79,10 +127,39 @@ function Modal({
 const inputClass =
   'w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none focus:border-primary'
 
+const fieldLabelClass = 'flex flex-col gap-1 text-xs font-medium text-muted-foreground'
+
+/** 数字输入 → number | null */
+const parseAmount = (value: string): number | null => {
+  const text = value.trim()
+  if (!text) return null
+  const num = Number(text)
+  return Number.isFinite(num) ? num : null
+}
+
+/** 规则条件摘要（列表展示用） */
+function ruleConditionSummary(rule: BillRule): string {
+  const parts: string[] = []
+  const add = (label: string, pattern: string | null) => {
+    const value = (pattern ?? '').trim()
+    if (value) parts.push(`${label}包含「${value}」`)
+  }
+  add('交易类型', rule.trade_type_pattern)
+  add('交易对方', rule.counterparty_pattern)
+  add('商品说明', rule.commodity_pattern)
+  if (rule.amount_min != null || rule.amount_max != null) {
+    parts.push(`金额 ${rule.amount_min ?? 0}~${rule.amount_max ?? '不限'}`)
+  }
+  if (rule.source) parts.push(`来源 ${sourceTag(rule.source)?.label ?? rule.source}`)
+  if (rule.direction) parts.push(`方向 ${directionLabel(rule.direction)}`)
+  if (parts.length === 0) return '无附加条件'
+  return parts.join(' · ')
+}
+
 /** 分类与规则配置 */
 export function RulesClient() {
   const [categories, setCategories] = useState<BillCategory[]>([])
-  const [rules, setRules] = useState<BillCategoryRule[]>([])
+  const [rules, setRules] = useState<BillRule[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -133,6 +210,18 @@ export function RulesClient() {
   const childCategories = (parentId: string) =>
     categories.filter((item) => item.parent_id === parentId)
 
+  /** 库里已有的收支类型（新增分类时直接复用，避免猜取值） */
+  const categoryTypes = useMemo(() => {
+    const values = new Set(categories.map((item) => item.category_type).filter(Boolean))
+    if (values.size === 0) values.add('expense')
+    return [...values]
+  }, [categories])
+
+  const defaultCategoryType = (parentId?: string | null) => {
+    const parent = parentId ? categories.find((item) => item.id === parentId) : undefined
+    return parent?.category_type ?? categoryTypes[0] ?? 'expense'
+  }
+
   const saveCategory = async () => {
     if (!categoryDraft) return
     const name = categoryDraft.name.trim()
@@ -144,16 +233,17 @@ export function RulesClient() {
     setFormError('')
     try {
       if (categoryDraft.id) {
-        await updateBillCategory(categoryDraft.id, { name, emoji: categoryDraft.emoji })
+        await updateBillCategory(categoryDraft.id, { name, icon: categoryDraft.icon })
         setCategories((prev) =>
           prev.map((item) =>
-            item.id === categoryDraft.id ? { ...item, name, emoji: categoryDraft.emoji } : item,
+            item.id === categoryDraft.id ? { ...item, name, icon: categoryDraft.icon } : item,
           ),
         )
       } else {
         const created = await insertBillCategory({
           name,
-          emoji: categoryDraft.emoji,
+          icon: categoryDraft.icon,
+          categoryType: categoryDraft.categoryType,
           parentId: categoryDraft.parentId ?? null,
         })
         setCategories((prev) => [...prev, created])
@@ -188,17 +278,36 @@ export function RulesClient() {
   const openCreateRule = (categoryId: string) => {
     setFormError('')
     setEditingRuleId('')
-    setRuleDraft({ keyword: '', field: 'counterparty', priority: '100', categoryId })
+    setRuleDraft({
+      ruleName: '',
+      priority: '100',
+      source: '',
+      direction: '',
+      tradeTypePattern: '',
+      counterpartyPattern: '',
+      commodityPattern: '',
+      matchType: 'all',
+      amountMin: '',
+      amountMax: '',
+      categoryId,
+    })
   }
 
   /** 打开「编辑规则」弹窗并回填当前规则数据 */
-  const openEditRule = (rule: BillCategoryRule) => {
+  const openEditRule = (rule: BillRule) => {
     setFormError('')
     setEditingRuleId(rule.id)
     setRuleDraft({
-      keyword: rule.keyword,
-      field: rule.match_field,
+      ruleName: rule.rule_name,
       priority: String(rule.priority),
+      source: rule.source ?? '',
+      direction: rule.direction ?? '',
+      tradeTypePattern: rule.trade_type_pattern ?? '',
+      counterpartyPattern: rule.counterparty_pattern ?? '',
+      commodityPattern: rule.commodity_pattern ?? '',
+      matchType: rule.match_type === 'any' ? 'any' : 'all',
+      amountMin: rule.amount_min == null ? '' : String(rule.amount_min),
+      amountMax: rule.amount_max == null ? '' : String(rule.amount_max),
       categoryId: rule.category_id,
     })
   }
@@ -212,9 +321,9 @@ export function RulesClient() {
 
   const saveRule = async () => {
     if (!ruleDraft || !selected) return
-    const keyword = ruleDraft.keyword.trim()
-    if (!keyword) {
-      setFormError('匹配关键词不能为空')
+    const ruleName = ruleDraft.ruleName.trim()
+    if (!ruleName) {
+      setFormError('规则名称不能为空')
       return
     }
     const priority = Number(ruleDraft.priority)
@@ -227,29 +336,48 @@ export function RulesClient() {
       setFormError('请选择所属分类')
       return
     }
+
+    const input: BillRuleInput = {
+      categoryId,
+      ruleName,
+      priority,
+      source: ruleDraft.source || null,
+      direction: ruleDraft.direction || null,
+      tradeTypePattern: ruleDraft.tradeTypePattern.trim() || null,
+      counterpartyPattern: ruleDraft.counterpartyPattern.trim() || null,
+      commodityPattern: ruleDraft.commodityPattern.trim() || null,
+      matchType: ruleDraft.matchType,
+      amountMin: parseAmount(ruleDraft.amountMin),
+      amountMax: parseAmount(ruleDraft.amountMax),
+    }
+
+    const hasCondition = Boolean(
+      input.source ||
+        input.direction ||
+        input.tradeTypePattern ||
+        input.counterpartyPattern ||
+        input.commodityPattern ||
+        input.amountMin != null ||
+        input.amountMax != null,
+    )
+    if (!hasCondition) {
+      setFormError('至少填写一个匹配条件（来源 / 方向 / 关键词 / 金额）')
+      return
+    }
+
     setSaving(true)
     setFormError('')
     try {
       if (editingRuleId) {
-        const updated = await updateBillRule(editingRuleId, {
-          keyword,
-          matchField: ruleDraft.field,
-          priority,
-          categoryId,
-        })
+        const updated = await updateBillRule(editingRuleId, input)
         setRules((prev) =>
           prev
             .map((rule) => (rule.id === updated.id ? updated : rule))
-            .sort((a, b) => b.priority - a.priority),
+            .sort((a, b) => a.priority - b.priority),
         )
       } else {
-        const created = await insertBillRule({
-          categoryId,
-          keyword,
-          matchField: ruleDraft.field,
-          priority,
-        })
-        setRules((prev) => [...prev, created].sort((a, b) => b.priority - a.priority))
+        const created = await insertBillRule(input)
+        setRules((prev) => [...prev, created].sort((a, b) => a.priority - b.priority))
       }
       closeRuleDraft()
     } catch (err) {
@@ -259,8 +387,8 @@ export function RulesClient() {
     }
   }
 
-  const removeRule = async (rule: BillCategoryRule) => {
-    if (!confirm(`删除规则「${rule.keyword}」？`)) return
+  const removeRule = async (rule: BillRule) => {
+    if (!confirm(`删除规则「${rule.rule_name}」？`)) return
     try {
       await deleteBillRule(rule.id)
       setRules((prev) => prev.filter((item) => item.id !== rule.id))
@@ -273,7 +401,7 @@ export function RulesClient() {
     <div className="min-h-[100dvh] w-full max-w-full overflow-x-hidden">
       <PageHeader
         title="分类与规则"
-        subtitle={selected ? '这个分类下的关键词规则' : '给账单配好分类，按关键词自动归类'}
+        subtitle={selected ? '这个分类下的自动归类规则' : '按来源 / 方向 / 关键词自动归类'}
         backHref="/bills/import"
         backLabel="返回账单"
         action={
@@ -282,7 +410,7 @@ export function RulesClient() {
               type="button"
               onClick={() => {
                 setFormError('')
-                setCategoryDraft({ name: '', emoji: EMOJIS[0] })
+                setCategoryDraft({ name: '', icon: ICONS[0], categoryType: defaultCategoryType() })
               }}
               className="shrink-0 rounded-full bg-primary px-4 py-1.5 text-sm font-semibold text-white active:bg-primary/90"
             >
@@ -335,9 +463,11 @@ export function RulesClient() {
             {/* 第二行：当前分类标题 + 规则数量 */}
             <div className="mb-2 min-w-0">
               <h2 className="truncate text-lg font-bold">
-                {selected.emoji} {selected.name}
+                {categoryIcon(selected)} {selected.name}
               </h2>
-              <p className="text-xs text-muted-foreground">{selectedRules.length} 条规则</p>
+              <p className="text-xs text-muted-foreground">
+                {selectedRules.length} 条规则 · {categoryTypeLabel(selected.category_type)}
+              </p>
             </div>
 
             {childCategories(selected.id).length > 0 && (
@@ -349,7 +479,7 @@ export function RulesClient() {
                     onClick={() => setSelectedId(child.id)}
                     className="max-w-full truncate rounded-full border bg-white px-3 py-1.5 text-xs font-medium text-slate-600"
                   >
-                    {child.emoji} {child.name}
+                    {categoryIcon(child)} {child.name}
                   </button>
                 ))}
               </div>
@@ -364,14 +494,19 @@ export function RulesClient() {
                 {selectedRules.map((rule) => (
                   <li key={rule.id} className="flex min-w-0 items-center gap-2 rounded-2xl border bg-card px-3 py-3">
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-base font-semibold">{rule.keyword}</p>
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        匹配 {FIELD_LABELS[rule.match_field] ?? rule.match_field} · 优先级 {rule.priority}
+                      <p className="flex min-w-0 items-center gap-1.5">
+                        <span className="min-w-0 truncate text-base font-semibold">{rule.rule_name}</span>
+                      </p>
+                      <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                        {ruleConditionSummary(rule)}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        {MATCH_TYPE_LABELS[rule.match_type] ?? rule.match_type} · 优先级 {rule.priority}
                       </p>
                     </div>
                     <button
                       type="button"
-                      aria-label={`编辑规则 ${rule.keyword}`}
+                      aria-label={`编辑规则 ${rule.rule_name}`}
                       onClick={() => openEditRule(rule)}
                       className="shrink-0 rounded-full px-3 py-2 text-base active:bg-muted"
                     >
@@ -379,7 +514,7 @@ export function RulesClient() {
                     </button>
                     <button
                       type="button"
-                      aria-label={`删除规则 ${rule.keyword}`}
+                      aria-label={`删除规则 ${rule.rule_name}`}
                       onClick={() => void removeRule(rule)}
                       className="shrink-0 rounded-full px-3 py-2 text-base active:bg-muted"
                     >
@@ -392,7 +527,7 @@ export function RulesClient() {
 
             {selectedRules.length > 0 && (
               <p className="mt-3 rounded-xl bg-muted px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-                同一笔账单命中多条规则时，优先级数字大的先生效；优先级相同时二级分类优先
+                同一笔账单命中多条规则时，优先级数字小的先生效；优先级相同时二级分类优先
               </p>
             )}
           </section>
@@ -420,11 +555,11 @@ export function RulesClient() {
                           onClick={() => setSelectedId(parent.id)}
                           className="flex min-w-0 flex-1 items-center gap-2 text-left"
                         >
-                          <span className="text-2xl">{parent.emoji}</span>
+                          <span className="text-2xl">{categoryIcon(parent)}</span>
                           <span className="min-w-0">
                             <span className="block truncate text-base font-semibold">{parent.name}</span>
                             <span className="text-xs text-muted-foreground">
-                              {ruleCount(parent.id)} 条规则
+                              {ruleCount(parent.id)} 条规则 · {categoryTypeLabel(parent.category_type)}
                               {children.length > 0 ? ` · ${children.length} 个子分类` : ''}
                             </span>
                           </span>
@@ -434,7 +569,12 @@ export function RulesClient() {
                           aria-label={`在 ${parent.name} 下添加子分类`}
                           onClick={() => {
                             setFormError('')
-                            setCategoryDraft({ name: '', emoji: parent.emoji, parentId: parent.id })
+                            setCategoryDraft({
+                              name: '',
+                              icon: categoryIcon(parent),
+                              categoryType: parent.category_type,
+                              parentId: parent.id,
+                            })
                           }}
                           className="rounded-full px-3 py-2 text-sm font-bold text-primary active:bg-muted"
                         >
@@ -448,7 +588,8 @@ export function RulesClient() {
                             setCategoryDraft({
                               id: parent.id,
                               name: parent.name,
-                              emoji: parent.emoji,
+                              icon: categoryIcon(parent),
+                              categoryType: parent.category_type,
                               parentId: parent.parent_id,
                             })
                           }}
@@ -478,7 +619,7 @@ export function RulesClient() {
                                 onClick={() => setSelectedId(child.id)}
                                 className="flex min-w-0 flex-1 items-center gap-2 pl-4 text-left"
                               >
-                                <span className="text-lg">{child.emoji}</span>
+                                <span className="text-lg">{categoryIcon(child)}</span>
                                 <span className="min-w-0">
                                   <span className="block truncate text-sm font-medium">{child.name}</span>
                                   <span className="text-[11px] text-muted-foreground">
@@ -494,7 +635,8 @@ export function RulesClient() {
                                   setCategoryDraft({
                                     id: child.id,
                                     name: child.name,
-                                    emoji: child.emoji,
+                                    icon: categoryIcon(child),
+                                    categoryType: child.category_type,
                                     parentId: child.parent_id,
                                   })
                                 }}
@@ -543,7 +685,7 @@ export function RulesClient() {
                 </span>
               </p>
             )}
-            <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+            <label className={fieldLabelClass}>
               分类名称
               <input
                 autoFocus
@@ -556,24 +698,43 @@ export function RulesClient() {
               />
             </label>
 
+            {!categoryDraft.id && (
+              <label className={fieldLabelClass}>
+                收支类型
+                <select
+                  value={categoryDraft.categoryType}
+                  onChange={(event) =>
+                    setCategoryDraft((prev) =>
+                      prev ? { ...prev, categoryType: event.target.value } : prev,
+                    )
+                  }
+                  className={inputClass}
+                >
+                  {categoryTypes.map((value) => (
+                    <option key={value} value={value}>
+                      {categoryTypeLabel(value)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
             <div className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
               选择图标
               <div className="grid grid-cols-6 gap-1.5">
-                {EMOJIS.map((emoji) => (
+                {ICONS.map((icon) => (
                   <button
-                    key={emoji}
+                    key={icon}
                     type="button"
-                    onClick={() =>
-                      setCategoryDraft((prev) => (prev ? { ...prev, emoji } : prev))
-                    }
+                    onClick={() => setCategoryDraft((prev) => (prev ? { ...prev, icon } : prev))}
                     className={cn(
                       'rounded-xl border py-1.5 text-lg',
-                      categoryDraft.emoji === emoji
+                      categoryDraft.icon === icon
                         ? 'border-primary bg-orange-50'
                         : 'border-transparent bg-muted',
                     )}
                   >
-                    {emoji}
+                    {icon}
                   </button>
                 ))}
               </div>
@@ -608,38 +769,20 @@ export function RulesClient() {
           onClose={closeRuleDraft}
         >
           <div className="flex flex-col gap-3">
-            <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-              匹配关键词
+            <label className={fieldLabelClass}>
+              规则名称
               <input
                 autoFocus
-                value={ruleDraft.keyword}
+                value={ruleDraft.ruleName}
                 onChange={(event) =>
-                  setRuleDraft((prev) => (prev ? { ...prev, keyword: event.target.value } : prev))
+                  setRuleDraft((prev) => (prev ? { ...prev, ruleName: event.target.value } : prev))
                 }
-                placeholder="如：盒马、山姆"
+                placeholder="如：超市买菜"
                 className={inputClass}
               />
             </label>
 
-            <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-              匹配字段
-              <select
-                value={ruleDraft.field}
-                onChange={(event) =>
-                  setRuleDraft((prev) =>
-                    prev ? { ...prev, field: event.target.value as BillRuleField } : prev,
-                  )
-                }
-                className={inputClass}
-              >
-                <option value="counterparty">交易对方</option>
-                <option value="commodity">商品说明</option>
-                <option value="trade_type">交易类型/分类</option>
-                <option value="all">全部</option>
-              </select>
-            </label>
-
-            <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+            <label className={fieldLabelClass}>
               所属分类
               <select
                 value={ruleDraft.categoryId}
@@ -653,24 +796,153 @@ export function RulesClient() {
                 {categories.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.parent_id ? '　↳ ' : ''}
-                    {item.emoji} {item.name}
+                    {categoryIcon(item)} {item.name}
                   </option>
                 ))}
               </select>
             </label>
 
-            <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-              优先级（数字越大越优先）
+            <div className="grid grid-cols-2 gap-2">
+              <label className={fieldLabelClass}>
+                优先级（越小越优先）
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  value={ruleDraft.priority}
+                  onChange={(event) =>
+                    setRuleDraft((prev) => (prev ? { ...prev, priority: event.target.value } : prev))
+                  }
+                  className={inputClass}
+                />
+              </label>
+              <label className={fieldLabelClass}>
+                数据来源
+                <select
+                  value={ruleDraft.source}
+                  onChange={(event) =>
+                    setRuleDraft((prev) => (prev ? { ...prev, source: event.target.value } : prev))
+                  }
+                  className={inputClass}
+                >
+                  {SOURCE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <label className={fieldLabelClass}>
+                收支方向
+                <select
+                  value={ruleDraft.direction}
+                  onChange={(event) =>
+                    setRuleDraft((prev) =>
+                      prev ? { ...prev, direction: event.target.value } : prev,
+                    )
+                  }
+                  className={inputClass}
+                >
+                  {DIRECTION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className={fieldLabelClass}>
+                条件关系
+                <select
+                  value={ruleDraft.matchType}
+                  onChange={(event) =>
+                    setRuleDraft((prev) =>
+                      prev ? { ...prev, matchType: event.target.value as BillRuleMatchType } : prev,
+                    )
+                  }
+                  className={inputClass}
+                >
+                  <option value="all">全部满足（AND）</option>
+                  <option value="any">任一满足（OR）</option>
+                </select>
+              </label>
+            </div>
+
+            <p className="text-xs font-semibold text-muted-foreground">
+              关键词条件（多个关键词用逗号分隔，留空表示不限制）
+            </p>
+
+            <label className={fieldLabelClass}>
+              交易类型
               <input
-                type="number"
-                inputMode="numeric"
-                value={ruleDraft.priority}
+                value={ruleDraft.tradeTypePattern}
                 onChange={(event) =>
-                  setRuleDraft((prev) => (prev ? { ...prev, priority: event.target.value } : prev))
+                  setRuleDraft((prev) =>
+                    prev ? { ...prev, tradeTypePattern: event.target.value } : prev,
+                  )
                 }
+                placeholder="如：转账,消费"
                 className={inputClass}
               />
             </label>
+
+            <label className={fieldLabelClass}>
+              交易对方
+              <input
+                value={ruleDraft.counterpartyPattern}
+                onChange={(event) =>
+                  setRuleDraft((prev) =>
+                    prev ? { ...prev, counterpartyPattern: event.target.value } : prev,
+                  )
+                }
+                placeholder="如：盒马,山姆"
+                className={inputClass}
+              />
+            </label>
+
+            <label className={fieldLabelClass}>
+              商品说明
+              <input
+                value={ruleDraft.commodityPattern}
+                onChange={(event) =>
+                  setRuleDraft((prev) =>
+                    prev ? { ...prev, commodityPattern: event.target.value } : prev,
+                  )
+                }
+                placeholder="如：蔬菜,水果"
+                className={inputClass}
+              />
+            </label>
+
+            <div className="grid grid-cols-2 gap-2">
+              <label className={fieldLabelClass}>
+                最小金额
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={ruleDraft.amountMin}
+                  onChange={(event) =>
+                    setRuleDraft((prev) => (prev ? { ...prev, amountMin: event.target.value } : prev))
+                  }
+                  placeholder="不限"
+                  className={inputClass}
+                />
+              </label>
+              <label className={fieldLabelClass}>
+                最大金额
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={ruleDraft.amountMax}
+                  onChange={(event) =>
+                    setRuleDraft((prev) => (prev ? { ...prev, amountMax: event.target.value } : prev))
+                  }
+                  placeholder="不限"
+                  className={inputClass}
+                />
+              </label>
+            </div>
 
             {formError && <p className="text-xs text-red-500">{formError}</p>}
 

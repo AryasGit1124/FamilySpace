@@ -81,11 +81,12 @@ export function BottomTabBar() {
     }
   }, [])
 
-  // 首次挂载时 AuthProvider 可能还没拿到 profile，此时家庭上下文为空、
-  // 查询会因 RLS 返回空数组；等 familyId 就绪后必须再拉一次，否则 Tab 永远只剩「今日」
+  // 只在家庭上下文就绪后拉取一次；subjects 由 subjects-changed 事件驱动刷新。
+  // 不再依赖 pathname —— 否则每次路由跳转都会重新查一遍 subjects 表。
   useEffect(() => {
+    if (!familyId) return
     void load()
-  }, [load, pathname, familyId, role])
+  }, [load, familyId])
 
   useEffect(() => {
     const onSubjectsChanged = () => {

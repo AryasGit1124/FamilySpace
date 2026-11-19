@@ -10,6 +10,7 @@ create table if not exists public.bill_ods (
   family_id uuid references public.families (id) on delete cascade,
   source text not null,              -- 'wechat' 微信 / 'alipay' 支付宝
   batch_id text,                     -- 导入批次号，方便整批撤回
+  file_name text,                    -- 导入的原始文件名
   trade_time timestamptz,            -- 交易时间
   trade_type text,                   -- 微信「交易类型」/ 支付宝「交易分类」
   counterparty text,                 -- 交易对方
@@ -30,6 +31,10 @@ create table if not exists public.bill_ods (
 -- 已有表补列（规则清洗 / 手动分类用）
 alter table public.bill_ods
   add column if not exists category_id uuid references public.bill_categories (id) on delete set null;
+
+-- 已有表补列：导入历史展示原始文件名
+alter table public.bill_ods
+  add column if not exists file_name text;
 
 -- 登记人：谁导入 / 谁手动记的账（冗余存名字，profile 查不到也能显示）
 alter table public.bill_ods

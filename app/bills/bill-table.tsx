@@ -1,7 +1,7 @@
 'use client'
 
 import { bjDateTime } from '@/lib/bills'
-import type { BillCategory, OdsBillRow } from '@/lib/supabase-queries'
+import { categoryIcon, type BillCategory, type OdsBillRow } from '@/lib/supabase-queries'
 
 /** 金额：收入绿色带 +，支出红色带 -，其他（不计收支）灰色 */
 function AmountCell({ row }: { row: OdsBillRow }) {
@@ -70,7 +70,7 @@ export function BillDetailTable({
                 <td className="whitespace-nowrap border-b px-2.5 py-1.5">
                   {category ? (
                     <span className="rounded-full bg-muted px-2 py-0.5 text-[10px]">
-                      {category.emoji} {category.name}
+                      {categoryIcon(category)} {category.name}
                     </span>
                   ) : onAssign && categories.length > 0 ? (
                     <select
@@ -81,7 +81,7 @@ export function BillDetailTable({
                       <option value="">未分类</option>
                       {categories.map((item) => (
                         <option key={item.id} value={item.id}>
-                          {item.emoji} {item.name}
+                          {categoryIcon(item)} {item.name}
                         </option>
                       ))}
                     </select>

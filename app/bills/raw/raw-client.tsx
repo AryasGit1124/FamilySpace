@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { bjDateTime, describeBillError, isMissingBillTable } from '@/lib/bills'
 import {
+  categoryIcon,
   fetchBillCategories,
   fetchOdsBatches,
   fetchOdsBills,
@@ -88,6 +89,7 @@ export function RawBillsClient({ batch }: { batch?: string }) {
     try {
       await updateOdsBillCategory(id, categoryId)
     } catch (err) {
+      console.error('[BillsRaw] 设置分类失败:', describeBillError(err), err)
       setRows((prev) =>
         prev.map((row) => (row.id === id ? { ...row, category_id: previous } : row)),
       )
@@ -208,7 +210,7 @@ export function RawBillsClient({ batch }: { batch?: string }) {
                       <td className="whitespace-nowrap border-b px-2.5 py-1.5">
                         {category ? (
                           <span className="rounded-full bg-muted px-2 py-0.5 text-[10px]">
-                            {category.emoji} {category.name}
+                            {categoryIcon(category)} {category.name}
                           </span>
                         ) : categories.length > 0 ? (
                           <select
@@ -219,7 +221,7 @@ export function RawBillsClient({ batch }: { batch?: string }) {
                             <option value="">未分类</option>
                             {categories.map((item) => (
                               <option key={item.id} value={item.id}>
-                                {item.emoji} {item.name}
+                                {categoryIcon(item)} {item.name}
                               </option>
                             ))}
                           </select>

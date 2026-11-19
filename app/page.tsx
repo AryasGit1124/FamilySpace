@@ -19,6 +19,10 @@ import type { CheckInTask, ScheduleEntry, Subject, Weekday } from '@/lib/mock-da
  */
 export const dynamic = 'force-dynamic'
 
+/** 家庭配置类数据正常只有几十行，上限只用于防御异常数据拖慢首屏 */
+const TEMPLATE_LIMIT = 500
+const CHECKIN_LIMIT = 2000
+
 export default async function TodayPage() {
   // 以北京时间为准：服务器可能跑在 UTC，直接 new Date() 会在北京时间 0~8 点把「今天」算成昨天
   const today = todayStr()
@@ -115,7 +119,11 @@ async function fetchAllWeeklyTemplates(): Promise<WeeklyTemplateRow[]> {
   const { data, error } = await scoped(
     supabase.from('weekly_templates').select(
       `
-        *,
+        id,
+        day_of_week,
+        task_id,
+        specific_date,
+        stars,
         tasks (
           id,
           subject_id,
@@ -135,7 +143,10 @@ async function fetchAllWeeklyTemplates(): Promise<WeeklyTemplateRow[]> {
       `.trim(),
     ),
     familyId,
-  ).order('day_of_week')
+  )
+    .order('day_of_week')
+    .limit(TEMPLATE_LIMIT)
+    .returns<WeeklyTemplateRow[]>()
 
   if (error) throw error
   return data ?? []
@@ -155,6 +166,7 @@ async function fetchWeekCheckins(
   )
     .gte('checkin_date', startDate)
     .lte('checkin_date', endDate)
+    .limit(CHECKIN_LIMIT)
 
   if (error) throw error
 
@@ -223,6 +235,8 @@ async function fetchAllSchedules(): Promise<ScheduleRow[]> {
   )
     .order('day_of_week')
     .order('start_time')
+    .limit(TEMPLATE_LIMIT)
+    .returns<ScheduleRow[]>()
 
   if (error) throw error
   return data ?? []

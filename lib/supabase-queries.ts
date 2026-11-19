@@ -1,10 +1,12 @@
 import { requireSupabase } from '@/lib/supabase'
 import { resolveFamilyId, type UserRole } from '@/lib/family'
+import type { BillCategory, BillDWD, BillRule } from '@/types/bill'
+import { categoryIdOr, categoryOrFilter, monthBounds } from './bill-stats'
 import { isoDayOfWeek, shiftDate, streakEndingAt, todayStr } from '@/lib/dates'
 import { nextMasteryState } from '@/lib/knowledge-logic'
 import { resolveTaskName } from '@/lib/task-names'
 import { baseStarsForCheckin, STREAK_BONUS_STARS } from '@/lib/star-rules'
-import { billFallbackKey, type BillSource, type OdsBill, type StatBill } from '@/lib/bills'
+import { type BillSource, type OdsBill, type StatBill } from '@/lib/bills'
 import type { Weekday } from '@/lib/mock-data'
 
 /**
@@ -644,6 +646,8 @@ export type OdsBatch = {
   source: string
   count: number
   createdAt: string
+  /** 导入时的原始文件名（老数据可能为空） */
+  fileName: string
 }
 
 /** 导入时每批写入的行数 */
@@ -673,10 +677,12 @@ async function resolveCreator(): Promise<{ id: string | null; name: string }> {
 export async function insertOdsBills(params: {
   source: BillSource
   batchId: string
+  /** 用户选择的原始文件名，同一批次每条记录都写入同样值 */
+  fileName: string
   rows: OdsBill[]
   onProgress?: (saved: number, total: number) => void
 }): Promise<number> {
-  const { source, batchId, rows, onProgress } = params
+  const { source, batchId, fileName, rows, onProgress } = params
   if (rows.length === 0) return 0
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
@@ -689,6 +695,7 @@ export async function insertOdsBills(params: {
       family_id: familyId,
       source,
       batch_id: batchId,
+      file_name: fileName,
       trade_time: row.tradeTime,
       trade_type: row.tradeType,
       counterparty: row.counterparty,
@@ -714,13 +721,20 @@ export async function insertOdsBills(params: {
   return saved
 }
 
-/** 手动记账：直接写入 bill_ods（source=manual，无批次号，直接带用户选的分类） */
-export async function insertManualBill(params: {
+/** 触发后台清洗：把 bill_ods 一个批次的原始数据清洗进 bill_dwd */
+export async function processBillBatch(batchId: string): Promise<void> {
+  const supabase = await requireSupabase()
+  const { error } = await supabase.rpc('process_bill_batch', { p_batch_id: batchId })
+  if (error) throw error
+}
+
+/** 手动记账：直接写入 bill_dwd（entry_source=manual，无需清洗） */
+export async function insertManualDwdBill(params: {
   direction: 'income' | 'expense'
   amount: number
   commodity: string | null
   categoryId: string | null
-  /** ISO 时间串 */
+  /** 北京时间「YYYY-MM-DDTHH:mm」或带秒 */
   tradeTime: string
 }): Promise<void> {
   const supabase = await requireSupabase()
@@ -728,68 +742,42 @@ export async function insertManualBill(params: {
   if (!familyId) throw new Error('没有找到当前家庭，请重新登录后再记账')
   const creator = await resolveCreator()
 
-  const { error } = await supabase.from('bill_ods').insert({
+  // 二级分类同时写入一级 category_id，和规则分类保持同一套语义
+  let parentId: string | null = null
+  if (params.categoryId) {
+    const { data, error } = await supabase
+      .from('bill_categories')
+      .select('parent_id')
+      .eq('id', params.categoryId)
+      .maybeSingle()
+    if (error) throw error
+    parentId = (data?.parent_id as string | null) ?? null
+  }
+
+  const tradeTime =
+    params.tradeTime.length === 16 ? `${params.tradeTime}:00` : params.tradeTime
+
+  const { error } = await supabase.from('bill_dwd').insert({
     family_id: familyId,
+    entry_source: 'manual',
     source: 'manual',
-    batch_id: null,
-    trade_time: params.tradeTime,
+    trade_time: tradeTime,
+    trade_type: '手工记账',
+    counterparty: null,
     commodity: params.commodity,
     direction: params.direction === 'income' ? '收入' : '支出',
-    amount: params.amount,
-    category_id: params.categoryId,
-    raw_data: { 来源: '手动记账' },
+    original_amount: params.amount,
+    refund_amount: 0,
+    net_amount: params.amount,
+    transaction_nature: params.direction,
+    category_id: parentId ?? params.categoryId,
+    subcategory_id: parentId ? params.categoryId : null,
+    category_source: params.categoryId ? 'manual' : 'uncategorized',
     creator_id: creator.id,
     creator_name: creator.name,
+    needs_review: false,
   })
   if (error) throw error
-}
-
-/**
- * 导入去重：查询本家庭已存在的交易单号。
- * 没有单号的老数据用「分钟级时间_金额_商品说明」兜底键一起比对。
- */
-export async function fetchExistingBillKeys(params: {
-  tradeNos: string[]
-  fallbackKeys: string[]
-}): Promise<Set<string>> {
-  const supabase = await requireSupabase()
-  const familyId = await resolveFamilyId()
-  const found = new Set<string>()
-  if (!familyId) return found
-
-  for (let index = 0; index < params.tradeNos.length; index += 200) {
-    const chunk = params.tradeNos.slice(index, index + 200)
-    const { data, error } = await supabase
-      .from('bill_ods')
-      .select('trade_no')
-      .eq('family_id', familyId)
-      .in('trade_no', chunk)
-    if (error) throw error
-    for (const row of data ?? []) {
-      if (row.trade_no) found.add(String(row.trade_no))
-    }
-  }
-
-  if (params.fallbackKeys.length > 0) {
-    const wanted = new Set(params.fallbackKeys)
-    const { data, error } = await supabase
-      .from('bill_ods')
-      .select('trade_time, amount, commodity')
-      .eq('family_id', familyId)
-      .is('trade_no', null)
-      .limit(5000)
-    if (error) throw error
-    for (const row of data ?? []) {
-      const key = billFallbackKey(
-        row.trade_time as string | null,
-        row.amount as number | null,
-        row.commodity as string | null,
-      )
-      if (wanted.has(key)) found.add(key)
-    }
-  }
-
-  return found
 }
 
 /** 手工记账防重：同家庭、同金额、同分类，且交易时间在同一个自然日（北京时间） */
@@ -804,12 +792,13 @@ export async function findSimilarManualBill(params: {
   if (!familyId) return false
 
   let query = supabase
-    .from('bill_ods')
+    .from('bill_dwd')
     .select('id')
     .eq('family_id', familyId)
-    .eq('amount', params.amount)
-    .gte('trade_time', `${params.day}T00:00:00+08:00`)
-    .lte('trade_time', `${params.day}T23:59:59.999+08:00`)
+    .gte('trade_time', `${params.day}T00:00:00`)
+    .lte('trade_time', `${params.day}T23:59:59.999`)
+  // 金额列已改为 net_amount / original_amount，两者任一相等都算重复
+  query = query.or(`net_amount.eq.${params.amount},original_amount.eq.${params.amount}`)
   query = params.categoryId
     ? query.eq('category_id', params.categoryId)
     : query.is('category_id', null)
@@ -819,36 +808,53 @@ export async function findSimilarManualBill(params: {
   return (data ?? []).length > 0
 }
 
-/** 导入批次列表：只取轻量列，按 batch_id 聚合条数与最近时间 */
-export async function fetchOdsBatches(limit = 5000): Promise<OdsBatch[]> {
+/** 最近若干次导入批次（同一 batch_id 聚合成一条，按时间倒序） */
+export async function fetchOdsBatches(limit = 30): Promise<OdsBatch[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
-  const { data, error } = await scoped(
-    supabase.from('bill_ods').select('batch_id, source, created_at'),
-    familyId,
-  )
-    .order('created_at', { ascending: false })
-    .limit(limit)
-
-  if (error) throw error
-
   const map = new Map<string, OdsBatch>()
-  for (const row of data ?? []) {
-    const batchId = (row.batch_id as string | null) ?? '(无批次号)'
-    const existing = map.get(batchId)
-    if (existing) {
-      existing.count += 1
-    } else {
-      // 结果已按 created_at 倒序，首次出现即该批次的最新时间
-      map.set(batchId, {
-        batchId,
-        source: (row.source as string) ?? '',
-        count: 1,
-        createdAt: (row.created_at as string) ?? '',
-      })
+  // PostgREST 默认单次最多 1000 行，这里按页扫描直到攒够所需批次；
+  // 不能用「只取最新 5000 行」，否则一个超大批次会把更早的导入记录全部挤出去。
+  const PAGE_SIZE = 1000
+  let offset = 0
+
+  while (map.size < limit) {
+    const { data, error } = await scoped(
+      supabase.from('bill_ods').select('batch_id, source, file_name, created_at'),
+      familyId,
+    )
+      .order('created_at', { ascending: false })
+      .order('batch_id', { ascending: true })
+      .range(offset, offset + PAGE_SIZE - 1)
+
+    if (error) throw error
+    const rows = data ?? []
+    if (rows.length === 0) break
+
+    for (const row of rows) {
+      const batchId = (row.batch_id as string | null) ?? '(无批次号)'
+      const existing = map.get(batchId)
+      if (existing) {
+        existing.count += 1
+        // 老批次可能只有部分行写了文件名，遇到非空值就补上
+        if (!existing.fileName && row.file_name) existing.fileName = row.file_name as string
+      } else {
+        // 结果已按 created_at 倒序，首次出现即该批次的最新时间
+        map.set(batchId, {
+          batchId,
+          source: (row.source as string) ?? '',
+          count: 1,
+          createdAt: (row.created_at as string) ?? '',
+          fileName: (row.file_name as string | null) ?? '',
+        })
+      }
     }
+
+    if (rows.length < PAGE_SIZE) break
+    offset += PAGE_SIZE
   }
-  return [...map.values()]
+
+  return [...map.values()].slice(0, limit)
 }
 
 /** 撤销一次导入：按 batch_id 删除该批次全部记录，返回删除条数 */
@@ -890,41 +896,6 @@ export async function fetchOdsBills(params?: {
   return (data ?? []) as OdsBillRow[]
 }
 
-/** 明细列表：分页取当前视图的全部账单，保证前端筛选不受 200 条窗口限制 */
-export async function fetchOdsBillsAll(params?: {
-  batchId?: string
-  maxRows?: number
-}): Promise<OdsBillRow[]> {
-  const supabase = await requireSupabase()
-  const familyId = await resolveFamilyId()
-  const pageSize = 500
-  const maxRows = params?.maxRows ?? 5000
-  const rows: OdsBillRow[] = []
-
-  for (let from = 0; from < maxRows; from += pageSize) {
-    let query = scoped(
-      supabase
-        .from('bill_ods')
-        .select(
-          'id, source, batch_id, category_id, trade_time, trade_type, counterparty, commodity, direction, amount, creator_name',
-        ),
-      familyId,
-    )
-    if (params?.batchId === '(无批次号)') query = query.is('batch_id', null)
-    else if (params?.batchId) query = query.eq('batch_id', params.batchId)
-
-    const { data, error } = await query
-      .order('trade_time', { ascending: false, nullsFirst: false })
-      .order('id', { ascending: true })
-      .range(from, from + pageSize - 1)
-
-    if (error) throw error
-    rows.push(...((data ?? []) as OdsBillRow[]))
-    if (!data || data.length < pageSize) break
-  }
-  return rows
-}
-
 /** 统计页聚合结果：一个时间桶的收支 */
 export type StatBucketRow = {
   bucket: string
@@ -935,13 +906,19 @@ export type StatBucketRow = {
 /** 统计页分类聚合结果 */
 export type StatCategoryRow = {
   category_id: string | null
+  /** 数据库返回的分类名（分类表被删时兜底展示） */
+  category_name?: string | null
   total_expense: number
 }
 
 /** 统计页筛选参数（与 RPC / 明细分页共用） */
 export type StatFilterParams = {
   year: string | null
+  /** 'all' 或不传表示全年 */
+  month?: string
   categoryIds?: string[] | null
+  /** 下钻选中的分类 id（一级分类会展开其全部二级分类） */
+  categoryId?: string | null
   creator?: string
   minAmount?: number | null
   maxAmount?: number | null
@@ -968,8 +945,8 @@ export async function fetchBillStatCreators(): Promise<string[]> {
   return ((data ?? []) as { creator: string }[]).map((row) => row.creator)
 }
 
-/** 统计页时间桶聚合（数据库端计算，前端只拿几十行） */
-export async function fetchBillStatBuckets(
+/** 统计页时间桶聚合：数据库端计算 get_bill_stats，前端只拿几十行 */
+export async function fetchMonthlySummary(
   params: StatFilterParams & { granularity: 'day' | 'month' | 'year' },
 ): Promise<StatBucketRow[]> {
   const supabase = await requireSupabase()
@@ -979,6 +956,7 @@ export async function fetchBillStatBuckets(
   const { data, error } = await supabase.rpc('get_bill_stats', {
     p_family_id: familyId,
     p_year: params.year ? Number(params.year) : null,
+    p_month: params.month && params.month !== 'all' ? Number(params.month) : null,
     p_granularity: params.granularity,
     p_category_ids: params.categoryIds && params.categoryIds.length > 0 ? params.categoryIds : null,
     p_creator: params.creator || null,
@@ -995,10 +973,8 @@ export async function fetchBillStatBuckets(
   }))
 }
 
-/** 统计页支出分类聚合（饼图） */
-export async function fetchBillStatCategories(
-  params: StatFilterParams,
-): Promise<StatCategoryRow[]> {
+/** 统计页支出分类聚合（饼图）：get_bill_category_summary 按月/年过滤 */
+export async function fetchCategorySummary(params: StatFilterParams): Promise<StatCategoryRow[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   if (!familyId) return []
@@ -1006,6 +982,7 @@ export async function fetchBillStatCategories(
   const { data, error } = await supabase.rpc('get_bill_category_summary', {
     p_family_id: familyId,
     p_year: params.year ? Number(params.year) : null,
+    p_month: params.month && params.month !== 'all' ? Number(params.month) : null,
     p_category_ids: params.categoryIds && params.categoryIds.length > 0 ? params.categoryIds : null,
     p_creator: params.creator || null,
     p_min_amount: params.minAmount ?? null,
@@ -1016,11 +993,113 @@ export async function fetchBillStatCategories(
   if (error) throw error
   return ((data ?? []) as StatCategoryRow[]).map((row) => ({
     category_id: row.category_id,
+    category_name: row.category_name ?? null,
     total_expense: Number(row.total_expense),
   }))
 }
 
-/** 统计页明细：服务端分页，每次 50 条 */
+type ResolvedCategoryFilter = {
+  /** PostgREST or 条件 */
+  filter: string
+  /** 一级分类下的二级分类 id 集合 */
+  subIds: string[]
+}
+
+/** 分类层级解析缓存：同一分类在 60 秒内只查一次 bill_categories */
+const categoryFilterCache = new Map<string, { value: ResolvedCategoryFilter; at: number }>()
+const CATEGORY_FILTER_TTL = 60_000
+
+/**
+ * 下钻分类 → PostgREST or 条件。
+ * 直接查 bill_categories 判断层级，不依赖页面里可能未加载 / 已过期的分类列表：
+ *   一级分类：category_id.eq.ID,subcategory_id.in.(ID, 全部二级分类...)
+ *   二级分类：subcategory_id.eq.ID
+ */
+async function resolveCategoryFilter(selectedId: string): Promise<ResolvedCategoryFilter> {
+  const cached = categoryFilterCache.get(selectedId)
+  if (cached && Date.now() - cached.at < CATEGORY_FILTER_TTL) return cached.value
+
+  const supabase = await requireSupabase()
+  const { data: self, error: selfError } = await supabase
+    .from('bill_categories')
+    .select('id, parent_id')
+    .eq('id', selectedId)
+    .maybeSingle()
+  if (selfError) throw selfError
+
+  let subIds: string[] = []
+  if (!self?.parent_id) {
+    // 一级分类：带出全部二级分类
+    const { data: children, error: childrenError } = await supabase
+      .from('bill_categories')
+      .select('id')
+      .eq('parent_id', selectedId)
+    if (childrenError) throw childrenError
+    subIds = (children ?? []).map((row) => row.id as string)
+  }
+
+  // 两列都匹配整棵子树：明细数据可能把分类写在 category_id，
+  // 也可能只写 subcategory_id，只查单列就会漏掉另一半账单。
+  const ids = [selectedId, ...subIds].join(',')
+  const value: ResolvedCategoryFilter = {
+    filter: `category_id.in.(${ids}),subcategory_id.in.(${ids})`,
+    subIds,
+  }
+
+  categoryFilterCache.set(selectedId, { value, at: Date.now() })
+  return value
+}
+
+/** 解析下钻分类的 or 条件（带日志），明细列表与顶部合计共用 */
+async function buildStatCategoryFilter(params: {
+  categoryId?: string | null
+  categoryIds?: string[] | null
+}): Promise<string | null> {
+  if (!params.categoryId) {
+    return params.categoryIds && params.categoryIds.length > 0
+      ? categoryIdOr(params.categoryIds)
+      : null
+  }
+  try {
+    const resolved = await resolveCategoryFilter(params.categoryId)
+    console.log(
+      '[BillsStats] 当前查询的分类条件:',
+      params.categoryId,
+      '对应的子分类IDs:',
+      resolved.subIds,
+      '查询条件:',
+      resolved.filter,
+    )
+    return resolved.filter
+  } catch (err) {
+    // 分类表读取失败时，退回前端已展开的子树 ids，避免整个查询报错
+    console.warn('[BillsStats] 解析分类层级失败，退回前端展开结果:', err)
+    const subIds = (params.categoryIds ?? []).filter((id) => id !== params.categoryId)
+    console.log('[BillsStats] 当前查询的分类条件:', params.categoryId, '对应的子分类IDs:', subIds)
+    return categoryOrFilter(params.categoryId, params.categoryIds)
+  }
+}
+
+/** 分类筛选 → id 数组（供 RPC 的 uuid[] 参数使用）：一级分类带出全部二级 */
+async function resolveCategoryIdList(params: {
+  categoryId?: string | null
+  categoryIds?: string[] | null
+}): Promise<string[] | null> {
+  if (!params.categoryId) {
+    return params.categoryIds && params.categoryIds.length > 0 ? [...params.categoryIds] : null
+  }
+  try {
+    const resolved = await resolveCategoryFilter(params.categoryId)
+    return [params.categoryId, ...resolved.subIds]
+  } catch (err) {
+    console.warn('[Bills] 解析分类层级失败，使用前端展开结果:', err)
+    return params.categoryIds && params.categoryIds.length > 0
+      ? [...params.categoryIds]
+      : [params.categoryId]
+  }
+}
+
+/** 统计页明细：查中间层 bill_dwd，服务端分页，每次 50 条 */
 export async function fetchStatBillsPage(
   params: StatFilterParams & { offset: number; limit: number },
 ): Promise<StatBill[]> {
@@ -1029,23 +1108,24 @@ export async function fetchStatBillsPage(
 
   let query = scoped(
     supabase
-      .from('bill_ods')
-      .select('id, source, trade_time, commodity, amount, direction, category_id, creator_name'),
+      .from('bill_dwd')
+      .select(
+        'id, source, trade_time, commodity, net_amount, transaction_nature, direction, category_id, subcategory_id, creator_name',
+      ),
     familyId,
-  ).not('direction', 'is', null)
+  )
 
   if (params.year) {
-    query = query
-      .gte('trade_time', `${params.year}-01-01T00:00:00+08:00`)
-      .lte('trade_time', `${params.year}-12-31T23:59:59.999+08:00`)
+    const { start, end } = monthBounds(params.year, params.month)
+    query = query.gte('trade_time', start).lt('trade_time', end)
   }
-  if (params.categoryIds && params.categoryIds.length > 0) {
-    query = query.in('category_id', params.categoryIds)
-  }
+  // 下钻分类：以 category_id 为准，实时解析父子层级后拼 or 条件
+  const categoryFilter = await buildStatCategoryFilter(params)
+  if (categoryFilter) query = query.or(categoryFilter)
   if (params.creator) query = query.eq('creator_name', params.creator)
-  if (params.excludeZero) query = query.neq('amount', 0)
-  if (typeof params.minAmount === 'number') query = query.gte('amount', params.minAmount)
-  if (typeof params.maxAmount === 'number') query = query.lte('amount', params.maxAmount)
+  if (params.excludeZero) query = query.neq('net_amount', 0)
+  if (typeof params.minAmount === 'number') query = query.gte('net_amount', params.minAmount)
+  if (typeof params.maxAmount === 'number') query = query.lte('net_amount', params.maxAmount)
 
   const { data, error } = await query
     .order('trade_time', { ascending: false, nullsFirst: false })
@@ -1053,112 +1133,62 @@ export async function fetchStatBillsPage(
     .range(params.offset, params.offset + params.limit - 1)
 
   if (error) throw error
-  return (data ?? []) as StatBill[]
-}
+  const rows = (data ?? []) as StatBill[]
 
-/** 未分类账单（只取匹配需要的列）：分页取全量，避免默认 1000 行上限 */
-export async function fetchUnclassifiedBills(): Promise<
-  { id: string; counterparty: string | null; commodity: string | null; trade_type: string | null }[]
-> {
-  const supabase = await requireSupabase()
-  const familyId = await resolveFamilyId()
-  const pageSize = 500
-  const rows: {
-    id: string
-    counterparty: string | null
-    commodity: string | null
-    trade_type: string | null
-  }[] = []
-
-  for (let from = 0; from < 20000; from += pageSize) {
-    const { data, error } = await scoped(
-      supabase.from('bill_ods').select('id, counterparty, commodity, trade_type'),
-      familyId,
-    )
-      .is('category_id', null)
-      .order('trade_time', { ascending: false, nullsFirst: false })
-      .range(from, from + pageSize - 1)
-
-    if (error) throw error
-    rows.push(
-      ...((data ?? []) as {
-        id: string
-        counterparty: string | null
-        commodity: string | null
-        trade_type: string | null
-      }[]),
-    )
-    if (!data || data.length < pageSize) break
+  // 下钻排查：分类条件命中但时间条件下为空时，打印去掉时间后的条数
+  if (rows.length === 0 && params.categoryId && categoryFilter) {
+    try {
+      const probe = await scoped(
+        supabase.from('bill_dwd').select('id', { count: 'exact', head: true }),
+        familyId,
+      ).or(categoryFilter)
+      console.warn('[BillsStats] 明细为空，该分类条件在全时间范围内的账单数:', probe.count, {
+        year: params.year,
+        month: params.month,
+      })
+    } catch (probeError) {
+      console.warn('[BillsStats] 明细诊断查询失败:', probeError)
+    }
   }
+
   return rows
 }
 
-/** 全量账单（重新分类用）：id + 参与匹配的字段 + 现有分类，分页取全量 */
-export async function fetchBillsForRecategorize(): Promise<
-  {
-    id: string
-    counterparty: string | null
-    commodity: string | null
-    trade_type: string | null
-    category_id: string | null
+/**
+ * 明细页顶部合计：与明细列表使用完全相同的筛选条件（含分类父子展开），
+ * 在数据库端用聚合函数求和，避免「列表有数据、汇总为 0」。
+ */
+export async function fetchStatBillsTotals(
+  params: StatFilterParams,
+): Promise<{ income: number; expense: number }> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const categoryFilter = await buildStatCategoryFilter(params)
+
+  let query = scoped(
+    supabase.from('bill_dwd').select('transaction_nature, net_amount.sum()'),
+    familyId,
+  )
+  if (params.year) {
+    const { start, end } = monthBounds(params.year, params.month)
+    query = query.gte('trade_time', start).lt('trade_time', end)
+  }
+  if (categoryFilter) query = query.or(categoryFilter)
+  if (params.creator) query = query.eq('creator_name', params.creator)
+  if (params.excludeZero) query = query.neq('net_amount', 0)
+  if (typeof params.minAmount === 'number') query = query.gte('net_amount', params.minAmount)
+  if (typeof params.maxAmount === 'number') query = query.lte('net_amount', params.maxAmount)
+
+  const { data, error } = await query
+  if (error) throw error
+
+  const rows = (data ?? []) as {
+    transaction_nature?: string | null
+    sum?: number | string | null
   }[]
-> {
-  const supabase = await requireSupabase()
-  const familyId = await resolveFamilyId()
-  const pageSize = 500
-  const rows: {
-    id: string
-    counterparty: string | null
-    commodity: string | null
-    trade_type: string | null
-    category_id: string | null
-  }[] = []
-
-  for (let from = 0; from < 20000; from += pageSize) {
-    const { data, error } = await scoped(
-      supabase
-        .from('bill_ods')
-        .select('id, counterparty, commodity, trade_type, category_id'),
-      familyId,
-    )
-      .order('trade_time', { ascending: false, nullsFirst: false })
-      .order('id', { ascending: true })
-      .range(from, from + pageSize - 1)
-
-    if (error) throw error
-    rows.push(
-      ...((data ?? []) as {
-        id: string
-        counterparty: string | null
-        commodity: string | null
-        trade_type: string | null
-        category_id: string | null
-      }[]),
-    )
-    if (!data || data.length < pageSize) break
-  }
-  return rows
-}
-
-/** 按分类批量回写 category_id（null 表示清空为未分类） */
-export async function updateBillsCategory(
-  ids: string[],
-  categoryId: string | null,
-): Promise<number> {
-  if (ids.length === 0) return 0
-  const supabase = await requireSupabase()
-  const chunkSize = 200
-  let updated = 0
-  for (let start = 0; start < ids.length; start += chunkSize) {
-    const chunk = ids.slice(start, start + chunkSize)
-    const { error } = await supabase
-      .from('bill_ods')
-      .update({ category_id: categoryId })
-      .in('id', chunk)
-    if (error) throw error
-    updated += chunk.length
-  }
-  return updated
+  const sumOf = (kind: string) =>
+    Number(rows.find((row) => row.transaction_nature === kind)?.sum ?? 0)
+  return { income: sumOf('income'), expense: sumOf('expense') }
 }
 
 /** 手动给单条账单设置分类（categoryId 为 null 表示清空） */
@@ -1172,34 +1202,247 @@ export async function updateOdsBillCategory(id: string, categoryId: string | nul
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// 中间层 bill_dwd：由 bill_ods 触发器清洗后同步，前端只读这一层
+// ──────────────────────────────────────────────────────────────────────────────
+
+/** 中间层 bill_dwd 的一行：类型定义见 types/bill.ts */
+export type DwdBillRow = BillDWD
+
+/** 明细列表展示所需字段（与 types/bill.ts 的 BillDWD 对齐） */
+const DWD_COLUMNS =
+  'id, family_id, entry_source, source, trade_time, trade_type, counterparty, commodity, direction, original_amount, refund_amount, net_amount, transaction_nature, category_id, subcategory_id, category_source, creator_name, needs_review'
+
+/** 明细列表的服务端筛选条件 */
+export type DwdBillFilters = {
+  batchId?: string
+  /** 'YYYY' */
+  year?: string
+  /** 'all' = 全年；'1'..'12' = 具体月份 */
+  month?: string
+  /** 下钻选中的分类 id：由数据层实时展开父子分类，优先于 categoryIds */
+  categoryId?: string
+  categoryIds?: string[] | null
+  /** 登记人姓名精确匹配 */
+  creator?: string
+  /** 关键词：商品 / 交易对方 / 备注 / 整行原始 JSON 模糊匹配 */
+  keyword?: string
+  minAmount?: number | null
+  maxAmount?: number | null
+  excludeZero?: boolean
+}
+
+/** 本地时间（北京时间）的年份；无时区的时间串直接取前 4 位 */
+const bjYearOf = (timestamp: string) => {
+  if (/^\d{4}-\d{2}-\d{2}/.test(timestamp) && !/(Z|[+-]\d{2}:?\d{2})$/.test(timestamp)) {
+    return timestamp.slice(0, 4)
+  }
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric' }).format(
+    new Date(timestamp),
+  )
+}
+
+/** 明细分页：每次取 limit 条，多取一条用于判断是否还有下一页 */
+export async function fetchDwdBillsPage(
+  params: DwdBillFilters & { offset?: number; limit?: number },
+): Promise<{ rows: DwdBillRow[]; hasMore: boolean }> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const limit = params.limit ?? 50
+  const offset = params.offset ?? 0
+  const keyword = (params.keyword ?? '').trim()
+  // 过滤掉会破坏 PostgREST or() 语法的字符（仅兜底查询需要）
+  const safeKeyword = keyword.replace(/[,()%_\\]/g, '')
+
+  // 与统计页共用：一级分类自动带出全部二级分类，两列都匹配
+  const categoryFilter = await buildStatCategoryFilter({
+    categoryId: params.categoryId,
+    categoryIds: params.categoryIds,
+  })
+
+  /*
+   * 关键词搜索优先走 RPC search_bill_dwd：
+   * 由数据库把 raw_data::text 转成纯文本做 ILIKE，
+   * 不与分页 / 时间 / 分类 / 金额等条件冲突（条件在 SQL 内一并生效）。
+   * RPC 未部署时才退回下面的 PostgREST 查询。
+   */
+  if (keyword && params.batchId !== '(无批次号)') {
+    const rpcCategoryIds = await resolveCategoryIdList(params)
+    const { data: rpcData, error: rpcError } = await supabase.rpc('search_bill_dwd', {
+      p_family_id: familyId,
+      p_keyword: keyword,
+      p_year: params.year ?? null,
+      p_month: params.month ?? null,
+      p_category_ids: rpcCategoryIds,
+      p_creator: params.creator ?? null,
+      p_batch_id: params.batchId ?? null,
+      p_min_amount: params.minAmount ?? null,
+      p_max_amount: params.maxAmount ?? null,
+      p_exclude_zero: params.excludeZero ?? false,
+      p_limit: limit + 1,
+      p_offset: offset,
+    })
+
+    if (!rpcError) {
+      const list = (rpcData ?? []) as DwdBillRow[]
+      return { rows: list.slice(0, limit), hasMore: list.length > limit }
+    }
+
+    const missingFunction =
+      rpcError.code === 'PGRST202' || /search_bill_dwd/i.test(rpcError.message ?? '')
+    if (!missingFunction) throw rpcError
+    console.warn(
+      '[Bills] search_bill_dwd 尚未创建，退回普通模糊查询:',
+      rpcError.message,
+    )
+  }
+
+  const buildQuery = (searchRawData: boolean) => {
+    let query = scoped(supabase.from('bill_dwd').select(DWD_COLUMNS), familyId)
+
+    if (params.batchId === '(无批次号)') query = query.is('batch_id', null)
+    else if (params.batchId) query = query.eq('batch_id', params.batchId)
+
+    if (params.year) {
+      const { start, end } = monthBounds(params.year, params.month)
+      query = query.gte('trade_time', start).lt('trade_time', end)
+    }
+    if (categoryFilter) query = query.or(categoryFilter)
+    if (params.creator) query = query.eq('creator_name', params.creator)
+    if (params.excludeZero) query = query.neq('net_amount', 0)
+    if (params.minAmount != null) query = query.gte('net_amount', params.minAmount)
+    if (params.maxAmount != null) query = query.lte('net_amount', params.maxAmount)
+
+    if (safeKeyword) {
+      const like = `%${safeKeyword}%`
+      const parts = [
+        `commodity.ilike.${like}`,
+        `counterparty.ilike.${like}`,
+        `remark.ilike.${like}`,
+      ]
+      // PostgREST 支持列名后接类型转换，jsonb::text 可做整行模糊搜索
+      if (searchRawData) parts.push(`raw_data::text.ilike.${like}`)
+      query = query.or(parts.join(','))
+    }
+
+    return query
+      .order('trade_time', { ascending: false, nullsFirst: false })
+      .order('id', { ascending: true })
+      .range(offset, offset + limit)
+  }
+
+  let { data, error } = await buildQuery(true)
+
+  // 极端情况下 PostgREST 不支持 jsonb 转 text，退化为常规字段搜索
+  if (error && keyword) {
+    console.warn('[Bills] raw_data 搜索不可用，退化为字段搜索:', error.message)
+    ;({ data, error } = await buildQuery(false))
+  }
+
+  if (error) throw error
+  const list = (data ?? []) as DwdBillRow[]
+  return { rows: list.slice(0, limit), hasMore: list.length > limit }
+}
+
+/** 年份下拉选项：取首尾交易时间生成连续年份（含今年） */
+export async function fetchDwdYears(): Promise<string[]> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  const base = () =>
+    scoped(supabase.from('bill_dwd').select('trade_time'), familyId).not('trade_time', 'is', null)
+  const [first, last] = await Promise.all([
+    base().order('trade_time', { ascending: true }).limit(1),
+    base().order('trade_time', { ascending: false }).limit(1),
+  ])
+  if (first.error) throw first.error
+  if (last.error) throw last.error
+
+  const thisYear = new Date().getFullYear()
+  const firstAt = first.data?.[0]?.trade_time as string | undefined
+  const lastAt = last.data?.[0]?.trade_time as string | undefined
+  const startYear = firstAt ? Number(bjYearOf(firstAt)) : thisYear
+  const endYear = lastAt ? Number(bjYearOf(lastAt)) : thisYear
+  const top = Math.max(endYear, thisYear)
+  const bottom = Math.min(startYear, thisYear)
+
+  const years: string[] = []
+  for (let year = top; year >= bottom; year -= 1) {
+    if (Number.isFinite(year)) years.push(String(year))
+  }
+  return years.length > 0 ? years : [String(thisYear)]
+}
+
+/** 手动给单条 DWD 账单设置分类：一级写 category_id，二级同时写 subcategory_id */
+export async function updateDwdBillCategory(id: string, categoryId: string | null) {
+  const supabase = await requireSupabase()
+
+  let parentId: string | null = null
+  if (categoryId) {
+    const { data, error } = await supabase
+      .from('bill_categories')
+      .select('parent_id')
+      .eq('id', categoryId)
+      .maybeSingle()
+    if (error) throw error
+    parentId = (data?.parent_id as string | null) ?? null
+  }
+
+  const { error } = await supabase
+    .from('bill_dwd')
+    .update({
+      category_id: parentId ?? categoryId,
+      subcategory_id: parentId ? categoryId : null,
+      category_source: 'manual',
+      needs_review: false,
+    })
+    .eq('id', id)
+  if (error) throw error
+}
+
+/** 一键应用规则：分类匹配与批量回写全部在数据库完成，返回被更新的条数 */
+export async function applyCategoryRules(): Promise<number> {
+  const supabase = await requireSupabase()
+  const familyId = await resolveFamilyId()
+  if (!familyId) throw new Error('当前账号还没有加入家庭')
+
+  const { data, error } = await supabase.rpc('apply_category_rules', { p_family_id: familyId })
+  if (error) throw error
+  return Number(data ?? 0)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // 账单分类与归类规则
 // ──────────────────────────────────────────────────────────────────────────────
 
-export type BillCategory = {
-  id: string
-  name: string
-  emoji: string
-  sort_order: number
-  /** 父级分类（多级分类）；顶层为 null */
-  parent_id: string | null
-}
+export type { BillCategory, BillDWD, BillRule } from '@/types/bill'
 
-/** 规则匹配字段：交易对方 / 商品说明 / 交易类型或分类 / 全部 */
-export type BillRuleField = 'counterparty' | 'commodity' | 'trade_type' | 'all'
+/** 分类图标兜底 */
+export { categoryIcon } from './bill-stats'
 
-export type BillCategoryRule = {
-  id: string
-  category_id: string
-  keyword: string
-  match_field: BillRuleField
+/** 新增 / 编辑规则的入参（priority 数字越小越优先） */
+export type BillRuleInput = {
+  categoryId: string
+  ruleName: string
   priority: number
+  source?: string | null
+  direction?: string | null
+  tradeTypePattern?: string | null
+  counterpartyPattern?: string | null
+  commodityPattern?: string | null
+  matchType?: string
+  amountMin?: number | null
+  amountMax?: number | null
 }
+
+const CATEGORY_COLUMNS = 'id, parent_id, name, category_type, icon'
+
+const RULE_COLUMNS =
+  'id, rule_name, priority, source, direction, trade_type_pattern, counterparty_pattern, commodity_pattern, match_type, amount_min, amount_max, category_id'
 
 export async function fetchBillCategories(): Promise<BillCategory[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const { data, error } = await scoped(
-    supabase.from('bill_categories').select('id, name, emoji, sort_order, parent_id'),
+    supabase.from('bill_categories').select(CATEGORY_COLUMNS),
     familyId,
   )
     .order('sort_order', { ascending: true })
@@ -1210,7 +1453,8 @@ export async function fetchBillCategories(): Promise<BillCategory[]> {
 
 export async function insertBillCategory(params: {
   name: string
-  emoji: string
+  icon: string
+  categoryType: string
   /** 父级分类（二级分类）；不传表示一级分类 */
   parentId?: string | null
 }) {
@@ -1220,22 +1464,24 @@ export async function insertBillCategory(params: {
     .from('bill_categories')
     .insert({
       name: params.name,
-      emoji: params.emoji,
-      // 一级分类不带 parent_id，避免旧库还没加列时报错
+      icon: params.icon,
+      category_type: params.categoryType,
+      enabled: true,
+      is_system: false,
       ...(params.parentId ? { parent_id: params.parentId } : {}),
       ...familyPatch(familyId),
     })
-    .select('id, name, emoji, sort_order, parent_id')
+    .select(CATEGORY_COLUMNS)
     .single()
   if (error) throw error
   return data as BillCategory
 }
 
-export async function updateBillCategory(id: string, params: { name: string; emoji: string }) {
+export async function updateBillCategory(id: string, params: { name: string; icon: string }) {
   const supabase = await requireSupabase()
   const { error } = await supabase
     .from('bill_categories')
-    .update({ name: params.name, emoji: params.emoji })
+    .update({ name: params.name, icon: params.icon })
     .eq('id', id)
   if (error) throw error
 }
@@ -1247,40 +1493,42 @@ export async function deleteBillCategory(id: string) {
   if (error) throw error
 }
 
-export async function fetchBillRules(): Promise<BillCategoryRule[]> {
+export async function fetchBillRules(): Promise<BillRule[]> {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const { data, error } = await scoped(
-    supabase.from('bill_category_rules').select('id, category_id, keyword, match_field, priority'),
+    supabase.from('bill_category_rules').select(RULE_COLUMNS),
     familyId,
   )
-    .order('priority', { ascending: false })
+    .order('priority', { ascending: true })
     .order('created_at', { ascending: true })
   if (error) throw error
-  return (data ?? []) as BillCategoryRule[]
+  return (data ?? []) as BillRule[]
 }
 
-export async function insertBillRule(params: {
-  categoryId: string
-  keyword: string
-  matchField: BillRuleField
-  priority: number
-}) {
+export async function insertBillRule(params: BillRuleInput) {
   const supabase = await requireSupabase()
   const familyId = await resolveFamilyId()
   const { data, error } = await supabase
     .from('bill_category_rules')
     .insert({
       category_id: params.categoryId,
-      keyword: params.keyword,
-      match_field: params.matchField,
+      rule_name: params.ruleName,
       priority: params.priority,
+      source: params.source ?? null,
+      direction: params.direction ?? null,
+      trade_type_pattern: params.tradeTypePattern ?? null,
+      counterparty_pattern: params.counterpartyPattern ?? null,
+      commodity_pattern: params.commodityPattern ?? null,
+      match_type: params.matchType ?? 'all',
+      amount_min: params.amountMin ?? null,
+      amount_max: params.amountMax ?? null,
       ...familyPatch(familyId),
     })
-    .select('id, category_id, keyword, match_field, priority')
+    .select(RULE_COLUMNS)
     .single()
   if (error) throw error
-  return data as BillCategoryRule
+  return data as BillRule
 }
 
 export async function deleteBillRule(id: string) {
@@ -1289,25 +1537,29 @@ export async function deleteBillRule(id: string) {
   if (error) throw error
 }
 
-/** 修改规则：可同时改关键词、匹配字段、优先级和所属分类 */
-export async function updateBillRule(
-  id: string,
-  params: { keyword: string; matchField: BillRuleField; priority: number; categoryId?: string },
-) {
+/** 修改规则：所有匹配条件与所属分类都可调整 */
+export async function updateBillRule(id: string, params: BillRuleInput) {
   const supabase = await requireSupabase()
   const { data, error } = await supabase
     .from('bill_category_rules')
     .update({
-      keyword: params.keyword,
-      match_field: params.matchField,
+      category_id: params.categoryId,
+      rule_name: params.ruleName,
       priority: params.priority,
-      ...(params.categoryId ? { category_id: params.categoryId } : {}),
+      source: params.source ?? null,
+      direction: params.direction ?? null,
+      trade_type_pattern: params.tradeTypePattern ?? null,
+      counterparty_pattern: params.counterpartyPattern ?? null,
+      commodity_pattern: params.commodityPattern ?? null,
+      match_type: params.matchType ?? 'all',
+      amount_min: params.amountMin ?? null,
+      amount_max: params.amountMax ?? null,
     })
     .eq('id', id)
-    .select('id, category_id, keyword, match_field, priority')
+    .select(RULE_COLUMNS)
     .single()
   if (error) throw error
-  return data as BillCategoryRule
+  return data as BillRule
 }
 
 /**

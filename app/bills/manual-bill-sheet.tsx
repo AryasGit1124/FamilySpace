@@ -2,7 +2,12 @@
 
 import { useMemo, useState } from 'react'
 import { describeBillError } from '@/lib/bills'
-import { findSimilarManualBill, insertManualBill, type BillCategory } from '@/lib/supabase-queries'
+import {
+  categoryIcon,
+  findSimilarManualBill,
+  insertManualDwdBill,
+  type BillCategory,
+} from '@/lib/supabase-queries'
 import { cn } from '@/lib/utils'
 
 /** 北京时间「YYYY-MM-DDTHH:mm」，不依赖设备时区 */
@@ -43,8 +48,7 @@ export function ManualBillSheet({
       setError('请输入大于 0 的金额')
       return
     }
-    const time = new Date(tradeTime)
-    if (Number.isNaN(time.getTime())) {
+    if (!tradeTime) {
       setError('请选择交易时间')
       return
     }
@@ -70,12 +74,12 @@ export function ManualBillSheet({
         if (!confirmed) return
       }
 
-      await insertManualBill({
+      await insertManualDwdBill({
         direction,
         amount: rounded,
         commodity: description,
         categoryId: categoryId || null,
-        tradeTime: time.toISOString(),
+        tradeTime,
       })
       alert('记账成功')
       await onSaved()
@@ -170,7 +174,7 @@ export function ManualBillSheet({
                       : 'border-slate-200 bg-white text-slate-600',
                   )}
                 >
-                  {category.emoji} {category.name}
+                  {categoryIcon(category)} {category.name}
                 </button>
               ))}
             </div>
